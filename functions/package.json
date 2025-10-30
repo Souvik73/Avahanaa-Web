@@ -1,0 +1,13 @@
+{
+  "name": "avahanaa-functions",
+  "version": "1.0.0",
+  "description": "Firebase Cloud Functions for Avahanaa notifications.",
+  "main": "index.js",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.11.1",
+    "firebase-functions": "^4.4.1"
+  }
+}

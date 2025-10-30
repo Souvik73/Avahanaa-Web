@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Avahanaa – Quick Vehicle Notifications</title>
+    <meta name="description" content="Avahanaa enables quick, private notifications to vehicle owners via QR codes. Scan a QR, choose a reason and notify the owner instantly. Built with privacy and convenience in mind." />
+    <!-- Favicon -->
+    <link rel="icon" type="image/jpeg" href="./logo.jpg" />
+    <!-- Google Fonts for crisp, modern typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet" />
+    <!-- Bootswatch Flatly theme for a clean, modern palette -->
+    <!-- We load the base Bootstrap CSS first and then the Lux theme to override colours. -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.1/dist/flatly/bootstrap.min.css"
+    />
+    <!-- Bootstrap Icons -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
+    />
+    <!-- Font Awesome (optional for richer iconography) -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <style>
+      /* Base layout */
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: #f8fafc;
+        font-family: 'Poppins', sans-serif;
+      }
+      /* Improve paragraph readability */
+      p {
+        line-height: 1.6;
+        margin-bottom: 1rem;
+      }
+      /* Hero section – a soothing gradient to complement the Flatly palette */
+      .hero {
+        /* Deep navy fading into bright teal for a modern look */
+        background: linear-gradient(135deg, #0a304e, #00a3cc);
+        color: #ffffff;
+        padding: 6rem 1rem;
+        text-align: center;
+      }
+      .hero h1 {
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+        font-size: 2.6rem;
+      }
+      .hero p {
+        font-size: 1.1rem;
+        max-width: 700px;
+        margin: 0 auto;
+        opacity: 0.95;
+      }
+      /* Step icons styling */
+      .how-it-works .step-icon {
+        font-size: 2.7rem;
+        /* Use the Lux primary blue for icons */
+        color: #0d6efd;
+      }
+      /* Footer styling */
+      .footer {
+        background-color: #002b5c;
+        color: #f8fafc;
+        padding: 2.5rem 0;
+        margin-top: auto;
+      }
+      /* Notification / card container maximum width */
+      .notification-card {
+        max-width: 700px;
+        margin: 2rem auto;
+      }
+      /* Reason button grid styling */
+      .reason-buttons button {
+        border-radius: 0.5rem;
+        padding: 0.6rem 0.8rem;
+        font-size: 0.95rem;
+        text-align: left;
+        white-space: normal;
+        display: flex;
+        align-items: center;
+        transition: background-color 0.15s ease;
+      }
+      .reason-buttons button i {
+        margin-right: 0.6rem;
+      }
+      /* Selected reason button */
+      .reason-buttons button.active {
+        /* Use Flatly primary green for the selected state */
+        background-color: #18bc9c !important;
+        color: #ffffff !important;
+        border-color: #18bc9c !important;
+      }
+      /* Unselected reason buttons */
+      .reason-buttons button:not(.active) {
+        background-color: #ffffff;
+        border-color: #d1d8e0;
+        color: #2c3e50;
+      }
+      /* Hover effect for unselected buttons */
+      .reason-buttons button:not(.active):hover {
+        background-color: #ecf2f9;
+      }
+
+      /* Form controls styling for better contrast */
+      .form-control,
+      textarea.form-control {
+        background-color: #ffffff;
+        border-color: #cbd5e1;
+        color: #0d2b45;
+      }
+      .form-control:focus,
+      textarea.form-control:focus {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+      }
+
+      /* Custom navbar colour to complement footer */
+      .navbar.bg-dark {
+        /* Align with footer dark hue */
+        background-color: #002b5c !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- Firebase compat SDKs to share config with the Flutter app -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics-compat.js"></script>
+    <!-- QR code scanner library -->
+    <script src="https://unpkg.com/html5-qrcode" ></script>
+    <!-- React and ReactDOM via CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <!-- Babel for JSX transpiling -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      // Avahanaa – Vehicle Notification Frontend
+      // This single-page application has three main pages: Home, Contact and Notify.
+      // The QR scanning is simulated by reading a "qr" query parameter from the URL.
+      // Once a QR id is resolved the corresponding user's FCM token is fetched from Firestore.
+      // A notification is delivered by calling a Firebase Cloud Function that sends FCM securely.
+
+      const { useState, useEffect } = React;
+
+      // Firebase configuration (replace with your own values)
+      const firebaseConfig = {
+        apiKey: "AIzaSyDVB09QVh9YizQ7p1YXGcQWQ_43NV6f0SE",
+        authDomain: "congestion-free.firebaseapp.com",
+        projectId: "congestion-free",
+        storageBucket: "congestion-free.firebasestorage.app",
+        messagingSenderId: "76007537447",
+        appId: "1:76007537447:web:57a848570f39091b5a4702",
+        measurementId: "G-5PNGPJZL6D",
+      };
+
+      // Initialize Firebase using the compat SDK
+      let db = null;
+      let functionsClient = null;
+      try {
+        if (firebase.apps.length === 0) {
+          firebase.initializeApp(firebaseConfig);
+        }
+        db = firebase.firestore();
+        functionsClient = firebase.functions();
+        if (typeof firebase.analytics === "function") {
+          try {
+            firebase.analytics();
+          } catch (analyticsErr) {
+            console.warn("Firebase analytics initialisation failed:", analyticsErr);
+          }
+        }
+      } catch (initErr) {
+        console.error("Firebase initialization failed:", initErr);
+      }
+
+      /**
+       * Utility to parse query parameters
+       */
+      function getQueryParam(name) {
+        const params = new URLSearchParams(window.location.search);
+        return params.get(name);
+      }
+
+      /**
+       * Fetches user data by QR code ID from Firestore.
+       * Assumes a collection "users" with field "qrCodeId" matching the scanned code.
+       * Returns null if no user found.
+       */
+      async function fetchUserByQrId(qrId) {
+        if (!qrId) return null;
+        // If Firestore isn't configured, return a test user for demonstration when qrId is "1".
+        if (!db) {
+          if (qrId === "1") {
+            return {
+              id: "demoUser",
+              email: "demo@avahanaa.com",
+              fcmToken: "TEST_FCM_TOKEN",
+              phoneNumber: "",
+              qrCodeId: "1",
+            };
+          }
+          return null;
+        }
+        try {
+          const snapshot = await db
+            .collection("users")
+            .where("qrCodeId", "==", qrId)
+            .get();
+          if (snapshot.empty) return null;
+          // Return first match
+          const doc = snapshot.docs[0];
+          return { id: doc.id, ...doc.data() };
+        } catch (error) {
+          console.error("Error fetching user by QR id:", error);
+          return null;
+        }
+      }
+
+      /**
+       * Fetches user data by either QR code ID or vehicle number (license plate).
+       * If Firestore is not configured, falls back to a demo user when a matching
+       * identifier is provided. When Firestore is available, it first queries
+       * the "users" collection for a matching `qrCodeId`. If no result is found
+       * it then tries to match a `licensePlate` or `vehicleNumber` field. You
+       * should ensure that license plates in Firestore are stored in a
+       * normalised format (e.g. uppercase without spaces) to allow direct
+       * equality matching since Firestore does not support case‑insensitive
+       * queries. When multiple matches are found, the first record is used.
+       *
+       * @param {string} identifier QR code ID or vehicle number
+       * @returns {Promise<Object|null>} user document or null if not found
+       */
+      async function fetchUserByIdOrPlate(identifier) {
+        if (!identifier) return null;
+        // Normalise identifier for licence plate matching
+        const normId = identifier.trim().toUpperCase();
+        // Demo fallback when Firestore is not set up
+        if (!db) {
+          // In demo mode we map id "1" or license "KA 01 ** 1234" to a test user
+          const demoPlates = ["1", "KA 01 ** 1234", "KA01**1234", "KA01** 1234"];
+          if (demoPlates.includes(normId)) {
+            return {
+              id: "demoUser",
+              name: "Demo User",
+              licensePlate: "KA 01 ** 1234",
+              car: "Test Car",
+              fcmToken: "TEST_FCM_TOKEN",
+              qrCodeId: "1",
+            };
+          }
+          return null;
+        }
+        try {
+          // First try to resolve by qrCodeId
+          let snapshot = await db
+            .collection("users")
+            .where("qrCodeId", "==", identifier)
+            .limit(1)
+            .get();
+          if (!snapshot.empty) {
+            const doc = snapshot.docs[0];
+            return { id: doc.id, ...doc.data() };
+          }
+          // Next try by license plate (normalised). Fields may be named differently; try common names
+          const plateFields = ["licensePlate", "vehicleNumber", "plateNumber", "carNumber"];
+          for (const field of plateFields) {
+            snapshot = await db
+              .collection("users")
+              .where(field, "==", normId)
+              .limit(1)
+              .get();
+            if (!snapshot.empty) {
+              const doc = snapshot.docs[0];
+              return { id: doc.id, ...doc.data() };
+            }
+          }
+          // If no match, return null
+          return null;
+        } catch (error) {
+          console.error("Error fetching user by identifier:", error);
+          return null;
+        }
+      }
+
+      /**
+       * Invokes the notifyOwner Cloud Function to deliver push notifications.
+       */
+      async function triggerNotifyFunction(payload) {
+        if (!functionsClient) {
+          return {
+            ok: false,
+            message: "Notifications service is not configured. Please check Firebase setup.",
+          };
+        }
+        try {
+          const callable = functionsClient.httpsCallable("notifyOwner");
+          const response = await callable(payload);
+          const result = (response && response.data) || {};
+          if (result.ok) {
+            return { ok: true };
+          }
+          return {
+            ok: false,
+            message: result.message || "Failed to deliver notification.",
+          };
+        } catch (error) {
+          console.error("Notification function error:", error);
+          const details = error?.details;
+          return {
+            ok: false,
+            message:
+              (details && details.message) ||
+              error?.message ||
+              "Notification request failed.",
+          };
+        }
+      }
+
+      /**
+       * Navbar component
+       */
+      function Navbar() {
+        return (
+          // Use a dark navy navbar for better contrast against light backgrounds
+          <nav className="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
+            <div className="container">
+              <a className="navbar-brand" href="./">
+                <img src="./logo.jpg" alt="Avahanaa" width="40" className="me-2" />
+                Avahanaa
+              </a>
+              <button
+                className="navbar-toggler"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#navbarNav"
+                aria-controls="navbarNav"
+                aria-expanded="false"
+                aria-label="Toggle navigation"
+              >
+                <span className="navbar-toggler-icon"></span>
+              </button>
+              <div className="collapse navbar-collapse" id="navbarNav">
+                <ul className="navbar-nav ms-auto">
+                  <li className="nav-item">
+                    <a className="nav-link" href="./index.html">Home</a>
+                  </li>
+                  <li className="nav-item">
+                    <a className="nav-link" href="./index.html?page=about">About</a>
+                  </li>
+                  <li className="nav-item">
+                    <a className="nav-link" href="./index.html?page=notify">Notify</a>
+                  </li>
+                  <li className="nav-item">
+                    <a className="nav-link" href="./index.html?page=contact">Contact</a>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </nav>
+        );
+      }
+
+      /**
+       * Footer component
+       */
+      function Footer() {
+        return (
+          <footer className="footer mt-5">
+            <div className="container text-center">
+              <div className="mb-2">
+                <img src="./logo.jpg" alt="Avahanaa logo" style={{ height: '32px', marginRight: '8px' }} />
+              </div>
+              <p className="mb-1">
+                &copy; 2025 Avahanaa. All rights reserved.
+              </p>
+              <p className="mb-0 small">
+                Powered by Firebase &amp; React. Designed with Bootswatch Flatly.
+              </p>
+            </div>
+          </footer>
+        );
+      }
+
+      /**
+       * Home page
+       */
+      function HomePage() {
+        const [scanning, setScanning] = React.useState(false);
+        const [scanner, setScanner] = React.useState(null);
+
+        // Clean up scanner on unmount
+        React.useEffect(() => {
+          return () => {
+            if (scanner) {
+              scanner.stop().catch(() => {});
+            }
+          };
+        }, [scanner]);
+
+        const startScan = () => {
+          setScanning(true);
+          const html5QrCode = new Html5Qrcode("qr-reader");
+          setScanner(html5QrCode);
+          html5QrCode
+            .start(
+              { facingMode: "environment" },
+              { fps: 10, qrbox: { width: 250, height: 250 } },
+              (decodedText, decodedResult) => {
+                // Attempt to extract qr code id from scanned content
+                let identifier = decodedText;
+                try {
+                  const url = new URL(decodedText);
+                  // look for id, qr or vehicle param
+                  identifier =
+                    url.searchParams.get("id") ||
+                    url.searchParams.get("qr") ||
+                    url.searchParams.get("vehicle") ||
+                    decodedText;
+                } catch (err) {
+                  // not a URL, use as is
+                }
+                html5QrCode
+                  .stop()
+                  .then(() => {
+                    setScanning(false);
+                    window.location.href = `./index.html?page=notify&id=${encodeURIComponent(
+                      identifier
+                    )}`;
+                  })
+                  .catch(() => {
+                    setScanning(false);
+                    window.location.href = `./index.html?page=notify&id=${encodeURIComponent(
+                      identifier
+                    )}`;
+                  });
+              },
+              (errorMessage) => {
+                // scanning error – ignore
+              }
+            )
+            .catch((err) => {
+              console.error(err);
+              setScanning(false);
+            });
+        };
+
+        const stopScan = () => {
+          if (scanner) {
+            scanner
+              .stop()
+              .then(() => {
+                setScanning(false);
+              })
+              .catch(() => {
+                setScanning(false);
+              });
+          } else {
+            setScanning(false);
+          }
+        };
+
+        return (
+          <div>
+            <section className="hero">
+              <div className="container">
+                <h1>Instantly Notify Vehicle Owners</h1>
+                <p>
+                  Avahanaa lets you discreetly contact vehicle owners by scanning a
+                  QR code. Help keep our cities safe and congestion‑free.
+                </p>
+                {!scanning && (
+                  <button
+                    type="button"
+                    className="btn btn-lg btn-primary mt-3"
+                    onClick={startScan}
+                  >
+                    Scan QR
+                  </button>
+                )}
+              </div>
+            </section>
+            {scanning && (
+              <section className="py-5 bg-light">
+                <div className="container text-center">
+                  <h2 className="mb-3">Scan the QR Code</h2>
+                  <div
+                    id="qr-reader"
+                    style={{ width: "300px", margin: "0 auto" }}
+                  ></div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary mt-3"
+                    onClick={stopScan}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </section>
+            )}
+            <section className="py-5">
+              <div className="container text-center">
+                <h2 className="mb-4">How It Works</h2>
+                <div className="row g-4 how-it-works">
+                  <div className="col-md-4">
+                    <div className="card shadow-sm h-100 border-0">
+                      <div className="card-body">
+                        <div className="step-icon mb-3">
+                          <i className="bi bi-phone" />
+                        </div>
+                        <h5 className="card-title">Generate QR</h5>
+                        <p className="card-text">
+                          Vehicle owners create an account in the app and get their unique
+                          QR code.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-md-4">
+                    <div className="card shadow-sm h-100 border-0">
+                      <div className="card-body">
+                        <div className="step-icon mb-3">
+                          <i className="bi bi-qr-code-scan" />
+                        </div>
+                        <h5 className="card-title">Scan &amp; Send</h5>
+                        <p className="card-text">
+                          Others scan the QR to contact the owner and choose a reason
+                          like emergency or blocked driveway.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-md-4">
+                    <div className="card shadow-sm h-100 border-0">
+                      <div className="card-body">
+                        <div className="step-icon mb-3">
+                          <i className="bi bi-bell-fill" />
+                        </div>
+                        <h5 className="card-title">Notify Owner</h5>
+                        <p className="card-text">
+                          Owners receive an instant push notification on the app and can
+                          respond accordingly.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        );
+      }
+
+      /**
+       * Contact page
+       */
+      function ContactPage() {
+        const [submitted, setSubmitted] = useState(false);
+        const [sending, setSending] = useState(false);
+        const [error, setError] = useState("");
+        const [form, setForm] = useState({ name: "", email: "", message: "" });
+        function handleChange(e) {
+          setForm({ ...form, [e.target.name]: e.target.value });
+        }
+        async function handleSubmit(e) {
+          e.preventDefault();
+          setError("");
+          if (!db) {
+            setError(
+              "Contact form is unavailable because Firebase is not configured."
+            );
+            return;
+          }
+          setSending(true);
+          try {
+            await db.collection("contactMessages").add({
+              name: form.name.trim(),
+              email: form.email.trim(),
+              message: form.message.trim(),
+              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+              source: "web-contact",
+            });
+            setSubmitted(true);
+            setForm({ name: "", email: "", message: "" });
+          } catch (err) {
+            console.error(err);
+            setError(err.message);
+          }
+          setSending(false);
+        }
+        return (
+          <div className="container py-5">
+            <h2>Contact Us</h2>
+            <p className="mb-4">
+              We’d love to hear from you! Share your questions, feedback or a review
+              of your experience with Avahanaa. Your comments will be sent directly
+              to our team at <strong>hello@avahanaa.com</strong>. Your input helps us
+              improve and better serve our community.
+            </p>
+            {error && (
+              <div className="alert alert-danger" role="alert">
+                {error}
+              </div>
+            )}
+            {!submitted ? (
+              <form onSubmit={handleSubmit} className="row g-3 mb-4">
+                <div className="col-md-6">
+                  <label className="form-label">Name</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    name="name"
+                    value={form.name}
+                    onChange={handleChange}
+                    required
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Email</label>
+                  <input
+                    type="email"
+                    className="form-control"
+                    name="email"
+                    value={form.email}
+                    onChange={handleChange}
+                    required
+                  />
+                </div>
+                <div className="col-12">
+                  <label className="form-label">Your message or review</label>
+                  <textarea
+                    className="form-control"
+                    name="message"
+                    rows="5"
+                    value={form.message}
+                    onChange={handleChange}
+                    required
+                  ></textarea>
+                </div>
+                <div className="col-12">
+                  <button type="submit" className="btn btn-primary" disabled={sending}>
+                    {sending ? "Sending…" : "Send Message"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="alert alert-success" role="alert">
+                Thank you for your message! We appreciate your feedback and will get back to you shortly.
+              </div>
+            )}
+            <div className="row">
+              <div className="col-md-6">
+                <h5>Our Office</h5>
+                <p>
+                  123 Main Street
+                  <br />Hābra, West Bengal 700109
+                  <br />India
+                </p>
+                <p>
+                  Email: <a href="mailto:hello@avahanaa.com">hello@avahanaa.com</a>
+                </p>
+                <p>Phone: +91 98765 43210</p>
+              </div>
+              <div className="col-md-6">
+                <h5>Company Info</h5>
+                <p>
+                  Avahanaa is committed to making urban mobility smoother and
+                  safer. Join us in our mission to reduce congestion and
+                  provide peace of mind for vehicle owners.
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /**
+       * About page – explains the project and contact info
+       */
+      function AboutPage() {
+        return (
+          <div className="container py-5">
+        <h2>About Avahanaa</h2>
+        <p className="lead">
+          Avahanaa bridges the communication gap between vehicle owners and their
+          community. Our platform marries QR codes with push notifications to
+          deliver quick, private alerts without exposing personal information.
+        </p>
+        <p>
+          Vehicle owners create an account in the Avahanaa mobile app, register
+          their vehicle details and receive a unique QR code. They print and
+          place this code on the car’s windscreen. When someone needs to
+          reach them—whether the car is blocking a driveway, the headlights
+          were left on or there’s an emergency inside—any passer‑by can
+          scan the code or enter the vehicle number on this site and send a
+          discreet notification. Owners are instantly alerted via the app
+          and can take appropriate action.
+        </p>
+        <p>
+          Our mission is to reduce congestion, enhance safety and protect
+          privacy by providing a frictionless way to alert vehicle owners.
+          Avahanaa is built with modern web technologies including React,
+          Bootstrap, and Firebase Cloud Messaging powered by Cloud Functions.
+        </p>
+        <h5>Reach out</h5>
+        <p>
+          Have questions or feedback? We’d love to hear from you.
+          Send us an email at
+          <a href="mailto:hello@avahanaa.com">hello@avahanaa.com</a>.
+        </p>
+          </div>
+        );
+      }
+
+      /**
+       * Notify page – main logic for reading the QR code and sending notifications
+       */
+      function NotifyPage() {
+        // Determine identifier from URL: id, qr or vehicle
+        const initialId = getQueryParam("id") || getQueryParam("qr") || getQueryParam("vehicle") || "";
+        const [identifier, setIdentifier] = useState(initialId);
+        const [user, setUser] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const [error, setError] = useState("");
+        const [reason, setReason] = useState("");
+        const [message, setMessage] = useState("");
+        const [contact, setContact] = useState("");
+        const [shareContact, setShareContact] = useState(false);
+        const [sent, setSent] = useState(false);
+        const [sending, setSending] = useState(false);
+        useEffect(() => {
+          async function resolveId() {
+            if (!identifier) return;
+            setLoading(true);
+            setError("");
+            const u = await fetchUserByIdOrPlate(identifier);
+            if (!u) {
+              setError(
+                "No owner record was found for this identifier. Please check the QR code or vehicle number and try again."
+              );
+            }
+            setUser(u);
+            setLoading(false);
+          }
+          resolveId();
+        }, [identifier]);
+        const reasonCodeMap = {
+          "Your vehicle is blocking my way": "blocking_driveway",
+          "Your headlights/hazards are on": "other",
+          "Your car alarm is ringing": "other",
+          "There is a pet inside, please check": "other",
+          "It’s urgent – please contact me": "emergency",
+          "Other (I’ll type a quick note)": "other",
+        };
+
+        async function handleSubmit(e) {
+          e.preventDefault();
+          if (!user || sending) return;
+          if (!user.fcmToken) {
+            setError(
+              "The owner has not enabled push notifications yet. Please try another contact method."
+            );
+            return;
+          }
+          const reasonCode = reasonCodeMap[reason] || "other";
+          const userPlate = user.licensePlate || user.vehicleNumber || "";
+          const title = userPlate
+            ? `Vehicle Alert – ${userPlate}`
+            : "Vehicle Alert";
+          const baseMessage = message?.trim()
+            ? message.trim()
+            : reason
+            ? `A visitor has selected the reason: ${reason}.`
+            : "A visitor is requesting your attention regarding your vehicle.";
+          const trimmedContact = contact?.trim();
+          const bodyMsg =
+            shareContact && trimmedContact
+              ? `${baseMessage} Contact: ${trimmedContact}`
+              : baseMessage;
+          setSending(true);
+          setError("");
+          const metadata = {
+            reason: reasonCode,
+            reasonLabel: reason || "",
+            message: bodyMsg,
+            identifier: identifier,
+          };
+          if (shareContact && trimmedContact) {
+            metadata.contact = trimmedContact;
+          }
+          if (userPlate) {
+            metadata.licensePlate = userPlate;
+          }
+          const carDetails =
+            (user.carDetails && typeof user.carDetails === "object"
+              ? user.carDetails
+              : {}) || {};
+          if (carDetails.carModel) {
+            metadata.carModel = carDetails.carModel;
+          }
+          if (carDetails.color) {
+            metadata.color = carDetails.color;
+          }
+          try {
+            const result = await triggerNotifyFunction({
+              qrId: user.qrCodeId || identifier,
+              userId: user.id || "",
+              fcmToken: user.fcmToken,
+              title,
+              body: bodyMsg,
+              metadata,
+            });
+            if (result.ok) {
+              setSent(true);
+            } else {
+              setError(result.message || "Failed to send notification.");
+            }
+          } catch (err) {
+            console.error("Failed to send notification", err);
+            setError(err?.message || "Failed to send notification.");
+          } finally {
+            setSending(false);
+          }
+        }
+        if (!identifier) {
+          return (
+            <div className="container py-5">
+              <h2>Notify Vehicle Owner</h2>
+              <p>Please enter the <strong>vehicle number</strong> or the QR identifier to proceed.</p>
+              <div className="mb-3 row g-2">
+                <div className="col-auto flex-grow-1">
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Vehicle number or QR ID"
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value.trim())}
+                  />
+                </div>
+                <div className="col-auto">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      const params = new URLSearchParams(window.location.search);
+                      params.set("id", identifier);
+                      // remove other params to avoid conflicts
+                      params.delete("qr");
+                      params.delete("vehicle");
+                      window.location.search = params.toString();
+                    }}
+                  >
+                    Resolve
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+        if (loading) {
+          return (
+            <div className="container py-5 text-center">
+              <div className="spinner-border text-primary" role="status"></div>
+              <p className="mt-3">Resolving vehicle…</p>
+            </div>
+          );
+        }
+        if (error) {
+          return (
+            <div className="container py-5">
+              <div className="alert alert-danger">{error}</div>
+              <a href="./index.html?page=notify" className="btn btn-secondary">
+                Try Again
+              </a>
+            </div>
+          );
+        }
+        if (!user) {
+          return null;
+        }
+        if (sent) {
+          return (
+            <div className="container py-5 text-center">
+              <div className="alert alert-success">
+                Your notification was sent successfully. The owner has been notified.
+              </div>
+              <a href="./index.html" className="btn btn-primary">Back to Home</a>
+            </div>
+          );
+        }
+        // Reasons with icons for a more engaging UI
+        const reasonOptions = [
+          { label: "Your vehicle is blocking my way", icon: "bi-exclamation-triangle-fill" },
+          { label: "Your headlights/hazards are on", icon: "bi-lightbulb-fill" },
+          { label: "Your car alarm is ringing", icon: "bi-bell-fill" },
+          { label: "There is a pet inside, please check", icon: "bi-heart-fill" },
+          { label: "It’s urgent – please contact me", icon: "bi-telephone-fill" },
+          { label: "Other (I’ll type a quick note)", icon: "bi-pencil-fill" },
+        ];
+        return (
+          <div className="container py-5">
+            <div className="row g-4">
+              <div className="col-12 col-lg-8">
+                <div className="card shadow-sm mb-4">
+                <div className="card-body">
+                    <h5 className="card-title mb-3">Sending a note to the owner</h5>
+                    <p className="mb-0">
+                      {user && user.licensePlate ? (
+                        <span>Vehicle number: <strong>{user.licensePlate}</strong></span>
+                      ) : (
+                        <span>Identifier: <strong>{identifier}</strong></span>
+                      )}
+                    </p>
+                    <p className="text-muted mb-0">
+                      Choose a reason and optionally leave a short note or share your
+                      contact. Your message will be sent instantly to the owner’s
+                      app.
+                    </p>
+                  </div>
+                </div>
+                <div className="card shadow-sm">
+                  <div className="card-body">
+                    <form onSubmit={handleSubmit}>
+                      <div className="mb-3">
+                        <label className="form-label fw-semibold">Reason</label>
+                        <div className="row g-2 reason-buttons">
+                          {reasonOptions.map((opt) => (
+                            <div className="col-12 col-md-6" key={opt.label}>
+                              <button
+                                type="button"
+                                className={`btn ${reason === opt.label ? "active" : ""} w-100`}
+                                onClick={() => setReason(opt.label)}
+                              >
+                                <i className={`bi ${opt.icon}`}></i>
+                                {opt.label}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      {reason === "Other (I’ll type a quick note)" && (
+                        <div className="mb-3">
+                          <label className="form-label">Quick note</label>
+                          <textarea
+                            className="form-control"
+                            rows="3"
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                            placeholder="Type your message here..."
+                          ></textarea>
+                        </div>
+                      )}
+                      {reason !== "Other (I’ll type a quick note)" && (
+                        <div className="mb-3">
+                          <label className="form-label">Optional note</label>
+                          <textarea
+                            className="form-control"
+                            rows="3"
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                            placeholder="Add quick context..."
+                          ></textarea>
+                        </div>
+                      )}
+                      <div className="form-check form-switch mb-3">
+                        <input
+                          className="form-check-input"
+                          type="checkbox"
+                          id="shareContactToggle"
+                          checked={shareContact}
+                          onChange={(e) => {
+                            setShareContact(e.target.checked);
+                            if (!e.target.checked) {
+                              setContact("");
+                            }
+                          }}
+                        />
+                        <label className="form-check-label" htmlFor="shareContactToggle">
+                          Share my contact (optional)
+                        </label>
+                      </div>
+                      {shareContact && (
+                        <div className="mb-3">
+                          <label className="form-label">Your contact</label>
+                          <input
+                            type="text"
+                            className="form-control"
+                            placeholder="Your phone or email"
+                            value={contact}
+                            onChange={(e) => setContact(e.target.value)}
+                          />
+                          <div className="form-text">
+                            Your contact details will be shared with the owner
+                            only if you provide them.
+                          </div>
+                        </div>
+                      )}
+                      <button
+                        type="submit"
+                        className="btn btn-success w-100 mt-2"
+                        disabled={sending || !reason}
+                      >
+                        {sending ? "Sending…" : "Notify Owner Now"}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+              <div className="col-12 col-lg-4">
+                <div className="card shadow-sm h-100">
+                  <div className="card-body">
+                    <h5>How it Works</h5>
+                    <ol className="small ps-3 mb-0">
+                      <li className="mb-2">
+                        Scan the QR code – it encodes a secure token.
+                      </li>
+                      <li className="mb-2">
+                        Pick a reason and add a short note. Optionally share
+                        your contact.
+                      </li>
+                      <li className="mb-2">
+                        We send your message instantly via a secure push
+                        notification to the owner’s device.
+                      </li>
+                      <li className="mb-0">
+                        The owner taps to view and respond. Your contact
+                        details are shared only if you opted in.
+                      </li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /**
+       * Main App component which selects the page based on URL.
+       */
+      function App() {
+        const page = new URLSearchParams(window.location.search).get("page");
+        let Component;
+        switch (page) {
+          case "contact":
+            Component = ContactPage;
+            break;
+          case "notify":
+            Component = NotifyPage;
+            break;
+          case "about":
+            Component = AboutPage;
+            break;
+          default:
+            Component = HomePage;
+        }
+        return (
+          <div>
+            <Navbar />
+            <Component />
+            <Footer />
+          </div>
+        );
+      }
+
+      // Use React 18 concurrent root API
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+
+    <!-- Bootstrap JS (for collapse nav etc.) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>
