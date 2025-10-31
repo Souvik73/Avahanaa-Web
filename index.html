@@ -151,11 +151,81 @@
     <script type="text/babel">
       // Avahanaa – Vehicle Notification Frontend
       // This single-page application has three main pages: Home, Contact and Notify.
-      // The QR scanning is simulated by reading a "qr" query parameter from the URL.
+      // QR codes can be scanned with the device camera or resolved manually through the URL parameters.
       // Once a QR id is resolved the corresponding user's FCM token is fetched from Firestore.
       // A notification is delivered by calling a Firebase Cloud Function that sends FCM securely.
 
       const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+      const QR_ENCRYPTION_DEFAULT_KEY = "0123456789abcdef0123456789abcdef";
+      const QR_ENCRYPTION_DEFAULT_IV = "abcdef9876543210";
+      const qrTextEncoder = new TextEncoder();
+      const qrSubtleCrypto =
+        (window.crypto && (window.crypto.subtle || window.crypto.webkitSubtle)) ||
+        null;
+
+      function getQrEncryptionConfig() {
+        const overrideKey =
+          (window.QR_ENCRYPTION_KEY || window.__QR_ENCRYPTION_KEY || "").trim();
+        const overrideIv =
+          (window.QR_ENCRYPTION_IV || window.__QR_ENCRYPTION_IV || "").trim();
+        return {
+          key: overrideKey || QR_ENCRYPTION_DEFAULT_KEY,
+          iv: overrideIv || QR_ENCRYPTION_DEFAULT_IV,
+        };
+      }
+
+      function applyPkcs7Padding(bytes) {
+        const blockSize = 16;
+        const remainder = bytes.length % blockSize;
+        const pad = remainder === 0 ? blockSize : blockSize - remainder;
+        const padded = new Uint8Array(bytes.length + pad);
+        padded.set(bytes);
+        for (let i = bytes.length; i < padded.length; i += 1) {
+          padded[i] = pad;
+        }
+        return padded;
+      }
+
+      function bytesToBase64(bytes) {
+        let binary = "";
+        const len = bytes.length;
+        for (let i = 0; i < len; i += 1) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+      }
+
+      async function encryptQrPayload(details) {
+        if (!qrSubtleCrypto) {
+          throw new Error("Web Crypto API is unavailable in this browser.");
+        }
+        const serialised = JSON.stringify(details);
+        const payloadBytes = qrTextEncoder.encode(serialised);
+        const paddedBytes = applyPkcs7Padding(payloadBytes);
+        const { key, iv } = getQrEncryptionConfig();
+        const keyBytes = qrTextEncoder.encode(key);
+        if (![16, 24, 32].includes(keyBytes.length)) {
+          throw new Error("QR encryption key must be 16, 24, or 32 bytes.");
+        }
+        const ivBytes = qrTextEncoder.encode(iv);
+        if (ivBytes.length !== 16) {
+          throw new Error("QR encryption IV must be 16 bytes.");
+        }
+        const cryptoKey = await qrSubtleCrypto.importKey(
+          "raw",
+          keyBytes,
+          { name: "AES-CBC" },
+          false,
+          ["encrypt"]
+        );
+        const encryptedBuffer = await qrSubtleCrypto.encrypt(
+          { name: "AES-CBC", iv: ivBytes },
+          cryptoKey,
+          paddedBytes
+        );
+        return bytesToBase64(new Uint8Array(encryptedBuffer));
+      }
 
       // Firebase configuration (replace with your own values)
       const firebaseConfig = {
@@ -463,33 +533,85 @@
         }, [cleanupScanner]);
 
         const handleScanSuccess = useCallback(
-          (decodedText) => {
+          async (decodedText) => {
+            const trimmedText = (decodedText || "").trim();
+            if (!trimmedText) {
+              return;
+            }
             if (hasProcessedScanRef.current) {
               return;
             }
             hasProcessedScanRef.current = true;
-            let identifier = decodedText;
+
+            let identifier = trimmedText;
+            const params = new URLSearchParams();
             try {
-              const url = new URL(decodedText);
-              identifier =
-                url.searchParams.get("id") ||
-                url.searchParams.get("qr") ||
-                url.searchParams.get("vehicle") ||
-                decodedText;
-            } catch (err) {
-              // payload is not a URL, use as-is
-            }
-            const nextLocation = `./index.html?page=notify&id=${encodeURIComponent(
-              identifier
-            )}`;
-            cleanupScanner()
-              .catch(() => {})
-              .finally(() => {
-                setScanning(false);
-                setInitialisingCamera(false);
-                setCameraError("");
-                window.location.href = nextLocation;
+              const candidateUrl = new URL(trimmedText, window.location.origin);
+              const candidateParams = new URLSearchParams(candidateUrl.search);
+              // Remove routing hints from legacy links
+              candidateParams.delete("page");
+              const qrFromUrl =
+                candidateParams.get("qr") ||
+                candidateParams.get("id") ||
+                candidateParams.get("vehicle");
+              if (qrFromUrl) {
+                identifier = qrFromUrl;
+                candidateParams.set("qr", qrFromUrl);
+              }
+              candidateParams.forEach((value, key) => {
+                if (value != null && value !== "") {
+                  params.set(key, value);
+                }
               });
+            } catch (err) {
+              // Not a URL, fall back to using the decoded string directly.
+            }
+
+            if (!params.has("qr") && identifier) {
+              params.set("qr", identifier);
+            }
+
+            if (!params.has("payload")) {
+              const detailKeys = ["carModel", "licensePlate", "color"];
+              const detailPayload = {};
+              detailKeys.forEach((key) => {
+                const rawValue = params.get(key);
+                if (typeof rawValue === "string" && rawValue.trim()) {
+                  detailPayload[key] = rawValue.trim();
+                }
+              });
+              if (Object.keys(detailPayload).length > 0) {
+                try {
+                  const encrypted = await encryptQrPayload(detailPayload);
+                  if (encrypted) {
+                    params.set("payload", encrypted);
+                    if (!params.has("v")) {
+                      params.set("v", "1");
+                    }
+                    detailKeys.forEach((key) => params.delete(key));
+                  }
+                } catch (encryptionError) {
+                  console.warn(
+                    "Failed to encrypt car details for QR redirect",
+                    encryptionError
+                  );
+                }
+              }
+            }
+
+            const targetHref = `./notify.html${
+              params.toString() ? `?${params.toString()}` : ""
+            }`;
+
+            try {
+              await cleanupScanner();
+            } catch (cleanupErr) {
+              console.warn("Scanner cleanup failed", cleanupErr);
+            }
+            setScanning(false);
+            setInitialisingCamera(false);
+            setCameraError("");
+            window.location.href = targetHref;
           },
           [cleanupScanner]
         );
