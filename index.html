@@ -155,7 +155,7 @@
       // Once a QR id is resolved the corresponding user's FCM token is fetched from Firestore.
       // A notification is delivered by calling a Firebase Cloud Function that sends FCM securely.
 
-      const { useState, useEffect } = React;
+      const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
       // Firebase configuration (replace with your own values)
       const firebaseConfig = {
@@ -397,82 +397,204 @@
       }
 
       /**
-       * Home page
-       */
+      * Home page
+      */
       function HomePage() {
-        const [scanning, setScanning] = React.useState(false);
-        const [scanner, setScanner] = React.useState(null);
+        const [scanning, setScanning] = useState(false);
+        const [cameraDevices, setCameraDevices] = useState([]);
+        const [selectedCameraId, setSelectedCameraId] = useState("");
+        const [cameraError, setCameraError] = useState("");
+        const [initialisingCamera, setInitialisingCamera] = useState(false);
+        const scannerRef = useRef(null);
+        const hasProcessedScanRef = useRef(false);
 
-        // Clean up scanner on unmount
-        React.useEffect(() => {
-          return () => {
-            if (scanner) {
-              scanner.stop().catch(() => {});
-            }
-          };
-        }, [scanner]);
+        const qrConfig = useMemo(
+          () => ({ fps: 10, qrbox: { width: 250, height: 250 } }),
+          []
+        );
 
-        const startScan = () => {
-          setScanning(true);
-          const html5QrCode = new Html5Qrcode("qr-reader");
-          setScanner(html5QrCode);
-          html5QrCode
-            .start(
-              { facingMode: "environment" },
-              { fps: 10, qrbox: { width: 250, height: 250 } },
-              (decodedText, decodedResult) => {
-                // Attempt to extract qr code id from scanned content
-                let identifier = decodedText;
-                try {
-                  const url = new URL(decodedText);
-                  // look for id, qr or vehicle param
-                  identifier =
-                    url.searchParams.get("id") ||
-                    url.searchParams.get("qr") ||
-                    url.searchParams.get("vehicle") ||
-                    decodedText;
-                } catch (err) {
-                  // not a URL, use as is
-                }
-                html5QrCode
-                  .stop()
-                  .then(() => {
-                    setScanning(false);
-                    window.location.href = `./index.html?page=notify&id=${encodeURIComponent(
-                      identifier
-                    )}`;
-                  })
-                  .catch(() => {
-                    setScanning(false);
-                    window.location.href = `./index.html?page=notify&id=${encodeURIComponent(
-                      identifier
-                    )}`;
-                  });
-              },
-              (errorMessage) => {
-                // scanning error – ignore
-              }
-            )
-            .catch((err) => {
-              console.error(err);
-              setScanning(false);
-            });
-        };
-
-        const stopScan = () => {
-          if (scanner) {
-            scanner
-              .stop()
-              .then(() => {
-                setScanning(false);
-              })
-              .catch(() => {
-                setScanning(false);
-              });
-          } else {
-            setScanning(false);
+        const cleanupScanner = useCallback(async () => {
+          const activeScanner = scannerRef.current;
+          if (!activeScanner) {
+            return;
           }
-        };
+          try {
+            await activeScanner.stop();
+          } catch (stopErr) {
+            console.warn("Scanner stop failed", stopErr);
+          }
+          try {
+            await activeScanner.clear();
+          } catch (clearErr) {
+            console.warn("Scanner clear failed", clearErr);
+          }
+          scannerRef.current = null;
+        }, []);
+
+        const stopScan = useCallback(async () => {
+          setInitialisingCamera(false);
+          setScanning(false);
+          hasProcessedScanRef.current = false;
+          await cleanupScanner();
+        }, [cleanupScanner]);
+
+        const requestCameraPermission = useCallback(async () => {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error(
+              "Camera access is not supported in this browser. Please try a different device."
+            );
+          }
+          let stream = null;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: { ideal: "environment" } },
+            });
+          } finally {
+            if (stream) {
+              stream.getTracks().forEach((track) => track.stop());
+            }
+          }
+        }, []);
+
+        useEffect(() => {
+          return () => {
+            cleanupScanner().catch(() => {});
+          };
+        }, [cleanupScanner]);
+
+        const handleScanSuccess = useCallback(
+          (decodedText) => {
+            if (hasProcessedScanRef.current) {
+              return;
+            }
+            hasProcessedScanRef.current = true;
+            let identifier = decodedText;
+            try {
+              const url = new URL(decodedText);
+              identifier =
+                url.searchParams.get("id") ||
+                url.searchParams.get("qr") ||
+                url.searchParams.get("vehicle") ||
+                decodedText;
+            } catch (err) {
+              // payload is not a URL, use as-is
+            }
+            const nextLocation = `./index.html?page=notify&id=${encodeURIComponent(
+              identifier
+            )}`;
+            cleanupScanner()
+              .catch(() => {})
+              .finally(() => {
+                setScanning(false);
+                setInitialisingCamera(false);
+                setCameraError("");
+                window.location.href = nextLocation;
+              });
+          },
+          [cleanupScanner]
+        );
+
+        const startScan = useCallback(
+          async (preferredCameraId) => {
+            const Html5Qrcode = window.Html5Qrcode;
+            if (!Html5Qrcode) {
+              setCameraError(
+                "QR scanner module failed to load. Please refresh the page."
+              );
+              return;
+            }
+            if (typeof window !== "undefined" && !window.isSecureContext) {
+              setCameraError(
+                "Camera access is blocked because this page is not loaded over HTTPS. Please open the secure Avahanaa site."
+              );
+              return;
+            }
+            setCameraError("");
+            setScanning(true);
+            setInitialisingCamera(true);
+            hasProcessedScanRef.current = false;
+            try {
+              await requestCameraPermission();
+              let cameras = cameraDevices;
+              if (!cameras.length) {
+                cameras = (await Html5Qrcode.getCameras()) || [];
+                setCameraDevices(cameras);
+              }
+              if (!cameras.length) {
+                throw new Error(
+                  "No cameras were detected on this device. Try another device."
+                );
+              }
+              let cameraId = preferredCameraId || selectedCameraId;
+              if (!cameraId || !cameras.some((camera) => camera.id === cameraId)) {
+                const rearCamera =
+                  cameras.find((camera) =>
+                    /back|rear|environment/i.test(camera.label || "")
+                  ) || cameras[0];
+                cameraId = rearCamera.id;
+              }
+              setSelectedCameraId(cameraId);
+
+              let activeScanner = scannerRef.current;
+              if (!activeScanner) {
+                activeScanner = new Html5Qrcode("qr-reader", {
+                  experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+                });
+                scannerRef.current = activeScanner;
+              } else {
+                try {
+                  await activeScanner.stop();
+                } catch {
+                  // ignore stop errors while switching cameras
+                }
+              }
+
+              await activeScanner.start(
+                { deviceId: { exact: cameraId } },
+                qrConfig,
+                handleScanSuccess,
+                () => {}
+              );
+              setCameraError("");
+            } catch (error) {
+              console.error("Failed to start QR scanning", error);
+              let message =
+                error?.message ||
+                "Unable to access the camera. Please grant permission and try again.";
+              if (error?.name === "NotAllowedError") {
+                message =
+                  "Camera permission was blocked. Please allow access from your browser settings and try again.";
+              } else if (error?.name === "NotFoundError") {
+                message =
+                  "No usable camera was found on this device. Try connecting a camera or using a different device.";
+              }
+              setCameraError(message);
+              setScanning(false);
+              await cleanupScanner();
+            } finally {
+              setInitialisingCamera(false);
+            }
+          },
+          [
+            cameraDevices,
+            cleanupScanner,
+            handleScanSuccess,
+            qrConfig,
+            requestCameraPermission,
+            selectedCameraId,
+          ]
+        );
+
+        const handleCameraChange = useCallback(
+          (event) => {
+            const newCameraId = event.target.value;
+            setSelectedCameraId(newCameraId);
+            if (scanning) {
+              startScan(newCameraId);
+            }
+          },
+          [scanning, startScan]
+        );
 
         return (
           <div>
@@ -487,10 +609,16 @@
                   <button
                     type="button"
                     className="btn btn-lg btn-primary mt-3"
-                    onClick={startScan}
+                    onClick={() => startScan()}
+                    disabled={initialisingCamera}
                   >
-                    Scan QR
+                    {initialisingCamera ? "Starting…" : "Scan QR"}
                   </button>
+                )}
+                {!scanning && cameraError && (
+                  <div className="alert alert-warning mt-3" role="alert">
+                    {cameraError}
+                  </div>
                 )}
               </div>
             </section>
@@ -498,17 +626,63 @@
               <section className="py-5 bg-light">
                 <div className="container text-center">
                   <h2 className="mb-3">Scan the QR Code</h2>
+                  <p className="text-muted small mb-4">
+                    When prompted, allow camera access so we can read the Avahanaa QR code.
+                  </p>
+                  {cameraDevices.length > 1 && (
+                    <div className="mb-3">
+                      <label className="form-label" htmlFor="cameraSelect">
+                        Choose camera
+                      </label>
+                      <select
+                        id="cameraSelect"
+                        className="form-select text-start"
+                        value={selectedCameraId}
+                        onChange={handleCameraChange}
+                        disabled={initialisingCamera}
+                      >
+                        {cameraDevices.map((camera, index) => (
+                          <option key={camera.id} value={camera.id}>
+                            {camera.label || `Camera ${index + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div
                     id="qr-reader"
                     style={{ width: "300px", margin: "0 auto" }}
                   ></div>
-                  <button
-                    type="button"
-                    className="btn btn-secondary mt-3"
-                    onClick={stopScan}
-                  >
-                    Cancel
-                  </button>
+                  {initialisingCamera && (
+                    <p className="text-muted small mt-3">
+                      Preparing camera… please allow access if prompted.
+                    </p>
+                  )}
+                  {cameraError && (
+                    <div className="alert alert-warning mt-3" role="alert">
+                      {cameraError}
+                    </div>
+                  )}
+                  <div className="d-flex flex-column flex-md-row justify-content-center gap-2 mt-3">
+                    {cameraError && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => startScan(selectedCameraId)}
+                        disabled={initialisingCamera}
+                      >
+                        Try again
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => stopScan()}
+                      disabled={initialisingCamera}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               </section>
             )}
