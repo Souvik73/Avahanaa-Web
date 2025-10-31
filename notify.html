@@ -565,15 +565,22 @@
         let decoded = null;
         if (payload) {
           try {
-            // Temporarily bypass AES decryption while the app sends plain payloads.
-            decoded = JSON.parse(payload);
+            decoded = await decodePayload(payload);
             if (decoded) {
               Object.assign(details, {
-                carModel: decoded.carModel || details.carModel,
-                licensePlate: decoded.licensePlate
-                  ? normalisePlate(decoded.licensePlate)
-                  : details.licensePlate,
-                color: decoded.color || details.color,
+                carModel:
+                  typeof decoded.carModel === "string" && decoded.carModel.trim()
+                    ? decoded.carModel.trim()
+                    : details.carModel,
+                licensePlate:
+                  typeof decoded.licensePlate === "string" &&
+                  decoded.licensePlate.trim()
+                    ? normalisePlate(decoded.licensePlate)
+                    : details.licensePlate,
+                color:
+                  typeof decoded.color === "string" && decoded.color.trim()
+                    ? decoded.color.trim()
+                    : details.color,
               });
               detailsSource = "payload";
             } else {
@@ -583,12 +590,49 @@
               };
             }
           } catch (error) {
-            console.warn("Failed to parse payload", error);
-            statusPreset = {
-              message:
-                "We could not read the shared vehicle details. Please contact the owner directly if possible.",
-              variant: "warning",
-            };
+            console.warn("Failed to decrypt payload", error);
+            try {
+              decoded = JSON.parse(payload);
+              if (decoded && typeof decoded === "object") {
+                Object.assign(details, {
+                  carModel:
+                    typeof decoded.carModel === "string" &&
+                    decoded.carModel.trim()
+                      ? decoded.carModel.trim()
+                      : details.carModel,
+                  licensePlate:
+                    typeof decoded.licensePlate === "string" &&
+                    decoded.licensePlate.trim()
+                      ? normalisePlate(decoded.licensePlate)
+                      : details.licensePlate,
+                  color:
+                    typeof decoded.color === "string" && decoded.color.trim()
+                      ? decoded.color.trim()
+                      : details.color,
+                });
+                detailsSource = "payload";
+                statusPreset = {
+                  message:
+                    "Vehicle details were shared without encryption. Ask the owner to update the Avahanaa app.",
+                  variant: "warning",
+                };
+              } else {
+                statusPreset = {
+                  message: "No car specifics were included in the payload.",
+                  variant: "info",
+                };
+              }
+            } catch (fallbackError) {
+              console.warn(
+                "Payload fallback parsing also failed",
+                fallbackError
+              );
+              statusPreset = {
+                message:
+                  "We could not read the shared vehicle details. Please contact the owner directly if possible.",
+                variant: "warning",
+              };
+            }
           }
         }
 
