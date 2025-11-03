@@ -160,6 +160,7 @@
       const QR_ENCRYPTION_DEFAULT_KEY = "0123456789abcdef0123456789abcdef";
       const QR_ENCRYPTION_DEFAULT_IV = "abcdef9876543210";
       const qrTextEncoder = new TextEncoder();
+      const qrTextDecoder = new TextDecoder();
       const qrSubtleCrypto =
         (window.crypto && (window.crypto.subtle || window.crypto.webkitSubtle)) ||
         null;
@@ -194,6 +195,90 @@
           binary += String.fromCharCode(bytes[i]);
         }
         return btoa(binary);
+      }
+
+      function base64ToBytes(value) {
+        const cleaned = (value || "").replace(/\s+/g, "");
+        if (!cleaned) return new Uint8Array();
+        const normalised = cleaned.replace(/-/g, "+").replace(/_/g, "/");
+        const padding = (4 - (normalised.length % 4 || 4)) % 4;
+        const padded = normalised + "=".repeat(padding);
+        const binary = atob(padded);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      function removePkcs7Padding(bytes) {
+        if (!bytes.length) {
+          return bytes;
+        }
+        const pad = bytes[bytes.length - 1];
+        if (pad < 1 || pad > 16) {
+          throw new Error("Invalid padding detected");
+        }
+        for (let i = bytes.length - pad; i < bytes.length; i += 1) {
+          if (bytes[i] !== pad) {
+            throw new Error("Invalid padding detected");
+          }
+        }
+        return bytes.slice(0, bytes.length - pad);
+      }
+
+      async function decodeQrPayload(payload) {
+        if (!payload) {
+          return null;
+        }
+        if (!qrSubtleCrypto) {
+          throw new Error("Web Crypto API is unavailable in this browser.");
+        }
+        const encryptedBytes = base64ToBytes(payload);
+        if (!encryptedBytes.length) {
+          return null;
+        }
+        const { key, iv } = getQrEncryptionConfig();
+        const keyBytes = qrTextEncoder.encode(key);
+        if (![16, 24, 32].includes(keyBytes.length)) {
+          throw new Error("QR encryption key must be 16, 24, or 32 bytes.");
+        }
+        const ivBytes = qrTextEncoder.encode(iv);
+        if (ivBytes.length !== 16) {
+          throw new Error("QR encryption IV must be 16 bytes.");
+        }
+        const cryptoKey = await qrSubtleCrypto.importKey(
+          "raw",
+          keyBytes,
+          { name: "AES-CBC" },
+          false,
+          ["decrypt"]
+        );
+        const decryptedBuffer = await qrSubtleCrypto.decrypt(
+          { name: "AES-CBC", iv: ivBytes },
+          cryptoKey,
+          encryptedBytes
+        );
+        const plainBytes = removePkcs7Padding(new Uint8Array(decryptedBuffer));
+        const jsonString = qrTextDecoder.decode(plainBytes);
+        const parsed = JSON.parse(jsonString);
+        if (!parsed || typeof parsed !== "object") {
+          return null;
+        }
+        const clean = {};
+        ["color", "carModel", "licensePlate"].forEach((keyName) => {
+          const value = parsed[keyName];
+          if (typeof value === "string" && value.trim()) {
+            clean[keyName] =
+              keyName === "licensePlate" ? normalisePlate(value) : value.trim();
+          }
+        });
+        return Object.keys(clean).length ? clean : null;
+      }
+
+      function normalisePlate(value) {
+        if (!value) return "";
+        return value.trim().toUpperCase();
       }
 
       async function encryptQrPayload(details) {
@@ -363,6 +448,89 @@
           return null;
         } catch (error) {
           console.error("Error fetching user by identifier:", error);
+          return null;
+        }
+      }
+
+      async function fetchOwnerByQr(qrCodeId) {
+        if (!qrCodeId) return null;
+        if (!db) {
+          if (qrCodeId === "1") {
+            return {
+              userId: "demoUser",
+              fcmToken: "TEST_FCM_TOKEN",
+              carDetails: {
+                carModel: "Test Car",
+                licensePlate: "KA 01 ** 1234",
+                color: "Blue",
+              },
+            };
+          }
+          return null;
+        }
+        try {
+          const qrDoc = await db.collection("qrCodes").doc(qrCodeId).get();
+          if (!qrDoc.exists) {
+            return null;
+          }
+          const qrData = qrDoc.data() || {};
+          const metadata =
+            qrData.metadata && typeof qrData.metadata === "object"
+              ? qrData.metadata
+              : {};
+          const metadataContact =
+            metadata.contact && typeof metadata.contact === "object"
+              ? metadata.contact
+              : {};
+          const owner = {
+            userId: qrData.userId || metadata.userId || "",
+            fcmToken: "",
+            contact: {
+              email:
+                typeof metadataContact.email === "string"
+                  ? metadataContact.email
+                  : "",
+              phoneNumber:
+                typeof metadataContact.phoneNumber === "string"
+                  ? metadataContact.phoneNumber
+                  : "",
+            },
+            carDetails:
+              metadata.carDetails && typeof metadata.carDetails === "object"
+                ? metadata.carDetails
+                : {},
+          };
+          if (owner.userId) {
+            const userDoc = await db.collection("users").doc(owner.userId).get();
+            if (userDoc.exists) {
+              const userData = userDoc.data() || {};
+              if (typeof userData.fcmToken === "string" && userData.fcmToken.trim()) {
+                owner.fcmToken = userData.fcmToken.trim();
+              }
+              if (
+                (!owner.carDetails || !Object.keys(owner.carDetails).length) &&
+                userData.carDetails &&
+                typeof userData.carDetails === "object"
+              ) {
+                owner.carDetails = userData.carDetails;
+              }
+              if (!owner.contact.email && typeof userData.email === "string") {
+                owner.contact.email = userData.email;
+              }
+              if (
+                !owner.contact.phoneNumber &&
+                typeof userData.phoneNumber === "string"
+              ) {
+                owner.contact.phoneNumber = userData.phoneNumber;
+              }
+            }
+          }
+          if (!owner.fcmToken && typeof qrData.fcmToken === "string") {
+            owner.fcmToken = qrData.fcmToken.trim();
+          }
+          return owner;
+        } catch (error) {
+          console.error("Error fetching owner profile for QR", error);
           return null;
         }
       }
@@ -599,7 +767,8 @@
               }
             }
 
-            const targetHref = `./notify.html${
+            params.set("page", "notify");
+            const targetHref = `./index.html${
               params.toString() ? `?${params.toString()}` : ""
             }`;
 
@@ -1026,10 +1195,33 @@
        * Notify page – main logic for reading the QR code and sending notifications
        */
       function NotifyPage() {
-        // Determine identifier from URL: id, qr or vehicle
-        const initialId = getQueryParam("id") || getQueryParam("qr") || getQueryParam("vehicle") || "";
-        const [identifier, setIdentifier] = useState(initialId);
+        const queryDefaults = useMemo(() => {
+          const params = new URLSearchParams(window.location.search);
+          const qrParam = (params.get("qr") || "").trim();
+          const idParam = (params.get("id") || "").trim();
+          const vehicleParam = (params.get("vehicle") || "").trim();
+          const payloadParam = (params.get("payload") || "").trim();
+          const details = {};
+          ["carModel", "color", "licensePlate"].forEach((key) => {
+            const value = params.get(key);
+            if (typeof value === "string" && value.trim()) {
+              details[key] =
+                key === "licensePlate" ? normalisePlate(value) : value.trim();
+            }
+          });
+          if (vehicleParam && !details.licensePlate) {
+            details.licensePlate = normalisePlate(vehicleParam);
+          }
+          return {
+            initialIdentifier: qrParam || idParam || vehicleParam || "",
+            initialQr: qrParam || idParam || "",
+            initialPayload: payloadParam,
+            directDetails: details,
+          };
+        }, []);
+        const [identifier, setIdentifier] = useState(queryDefaults.initialIdentifier);
         const [user, setUser] = useState(null);
+        const [ownerFromQr, setOwnerFromQr] = useState(null);
         const [loading, setLoading] = useState(false);
         const [error, setError] = useState("");
         const [reason, setReason] = useState("");
@@ -1038,22 +1230,225 @@
         const [shareContact, setShareContact] = useState(false);
         const [sent, setSent] = useState(false);
         const [sending, setSending] = useState(false);
+        const [carDetails, setCarDetails] = useState(() => ({
+          ...queryDefaults.directDetails,
+        }));
+        const [notifyTarget, setNotifyTarget] = useState({
+          fcmToken: "",
+          userId: "",
+        });
+        const initialQr = queryDefaults.initialQr;
+        const initialPayload = queryDefaults.initialPayload;
+
         useEffect(() => {
+          let cancelled = false;
+          async function decodePayload() {
+            if (!initialPayload) {
+              return;
+            }
+            try {
+              const decoded = await decodeQrPayload(initialPayload);
+              if (!decoded || cancelled) {
+                return;
+              }
+              setCarDetails((prev) => {
+                const next = { ...prev };
+                ["carModel", "licensePlate", "color"].forEach((key) => {
+                  const value = decoded[key];
+                  if (typeof value === "string" && value.trim()) {
+                    next[key] =
+                      key === "licensePlate"
+                        ? normalisePlate(value)
+                        : value.trim();
+                  }
+                });
+                return next;
+              });
+            } catch (payloadErr) {
+              console.warn("Failed to decode QR payload", payloadErr);
+            }
+          }
+          decodePayload();
+          return () => {
+            cancelled = true;
+          };
+        }, [initialPayload]);
+
+        useEffect(() => {
+          let cancelled = false;
+          if (!identifier && !initialQr) {
+            setUser(null);
+            setLoading(false);
+            if (!identifier) {
+              setError("");
+            }
+            return () => {
+              cancelled = true;
+            };
+          }
           async function resolveId() {
-            if (!identifier) return;
             setLoading(true);
             setError("");
-            const u = await fetchUserByIdOrPlate(identifier);
-            if (!u) {
-              setError(
-                "No owner record was found for this identifier. Please check the QR code or vehicle number and try again."
-              );
+            const searchOrder = [];
+            if (identifier) {
+              searchOrder.push(identifier);
             }
-            setUser(u);
+            if (initialQr && initialQr !== identifier) {
+              searchOrder.push(initialQr);
+            }
+            let resolvedUser = null;
+            for (const candidate of searchOrder) {
+              try {
+                resolvedUser = await fetchUserByIdOrPlate(candidate);
+              } catch (lookupErr) {
+                console.error("Failed to resolve owner record", lookupErr);
+              }
+              if (resolvedUser) {
+                break;
+              }
+            }
+            if (cancelled) {
+              return;
+            }
+            if (!resolvedUser) {
+              if (!initialQr) {
+                setError(
+                  "No owner record was found for this identifier. Please check the QR code or vehicle number and try again."
+                );
+              } else {
+                setError("");
+              }
+              setUser(null);
+              setLoading(false);
+              return;
+            }
+            setUser(resolvedUser);
+            setError("");
             setLoading(false);
+            setCarDetails((prev) => {
+              const next = { ...prev };
+              const plate =
+                resolvedUser.licensePlate ||
+                resolvedUser.vehicleNumber ||
+                (resolvedUser.carDetails &&
+                typeof resolvedUser.carDetails.licensePlate === "string"
+                  ? resolvedUser.carDetails.licensePlate
+                  : "");
+              if (plate && typeof plate === "string") {
+                next.licensePlate = normalisePlate(plate);
+              }
+              if (
+                resolvedUser.carDetails &&
+                typeof resolvedUser.carDetails === "object"
+              ) {
+                if (
+                  typeof resolvedUser.carDetails.carModel === "string" &&
+                  resolvedUser.carDetails.carModel.trim()
+                ) {
+                  next.carModel = resolvedUser.carDetails.carModel.trim();
+                }
+                if (
+                  typeof resolvedUser.carDetails.color === "string" &&
+                  resolvedUser.carDetails.color.trim()
+                ) {
+                  next.color = resolvedUser.carDetails.color.trim();
+                }
+              }
+              return next;
+            });
+            setNotifyTarget((prev) => ({
+              fcmToken: resolvedUser.fcmToken || prev.fcmToken || "",
+              userId:
+                prev.userId || resolvedUser.id || resolvedUser.userId || "",
+            }));
           }
           resolveId();
-        }, [identifier]);
+          return () => {
+            cancelled = true;
+          };
+        }, [identifier, initialQr]);
+
+        useEffect(() => {
+          let cancelled = false;
+          if (!initialQr) {
+            setOwnerFromQr(null);
+            return () => {
+              cancelled = true;
+            };
+          }
+          async function hydrateFromQr() {
+            try {
+              const owner = await fetchOwnerByQr(initialQr);
+              if (cancelled) {
+                return;
+              }
+              if (!owner) {
+                setOwnerFromQr(null);
+                if (!user) {
+                  setError(
+                    "This QR code is not yet linked to an owner profile. Ask them to open the Avahanaa app."
+                  );
+                } else {
+                  setError("");
+                }
+                return;
+              }
+              setOwnerFromQr(owner);
+              setError("");
+              if (owner.carDetails && typeof owner.carDetails === "object") {
+                setCarDetails((prev) => {
+                  const next = { ...prev };
+                  ["carModel", "licensePlate", "color"].forEach((key) => {
+                    const value = owner.carDetails[key];
+                    if (typeof value === "string" && value.trim()) {
+                      next[key] =
+                        key === "licensePlate"
+                          ? normalisePlate(value)
+                          : value.trim();
+                    }
+                  });
+                  return next;
+                });
+              }
+              setNotifyTarget((prev) => ({
+                fcmToken: owner.fcmToken || prev.fcmToken || "",
+                userId: owner.userId || prev.userId || "",
+              }));
+            } catch (qrErr) {
+              if (!cancelled) {
+                console.error(
+                  "Failed to load owner data for QR id",
+                  initialQr,
+                  qrErr
+                );
+              }
+            }
+          }
+          hydrateFromQr();
+          return () => {
+            cancelled = true;
+          };
+        }, [initialQr, user]);
+
+        useEffect(() => {
+          if (user || !ownerFromQr) {
+            return;
+          }
+          setUser({
+            id: ownerFromQr.userId || "",
+            userId: ownerFromQr.userId || "",
+            qrCodeId: initialQr || "",
+            carDetails: ownerFromQr.carDetails || {},
+            fcmToken: ownerFromQr.fcmToken || "",
+            licensePlate:
+              ownerFromQr.carDetails &&
+              typeof ownerFromQr.carDetails.licensePlate === "string"
+                ? normalisePlate(ownerFromQr.carDetails.licensePlate)
+                : "",
+          });
+          setError("");
+        }, [user, ownerFromQr, initialQr]);
+
         const reasonCodeMap = {
           "Your vehicle is blocking my way": "blocking_driveway",
           "Your headlights/hazards are on": "other",
@@ -1065,15 +1460,20 @@
 
         async function handleSubmit(e) {
           e.preventDefault();
-          if (!user || sending) return;
-          if (!user.fcmToken) {
+          if (sending) return;
+          const targetFcmToken =
+            notifyTarget.fcmToken || (user && user.fcmToken) || "";
+          if (!targetFcmToken) {
             setError(
               "The owner has not enabled push notifications yet. Please try another contact method."
             );
             return;
           }
           const reasonCode = reasonCodeMap[reason] || "other";
-          const userPlate = user.licensePlate || user.vehicleNumber || "";
+          const userPlate =
+            carDetails.licensePlate ||
+            (user && (user.licensePlate || user.vehicleNumber)) ||
+            "";
           const title = userPlate
             ? `Vehicle Alert – ${userPlate}`
             : "Vehicle Alert";
@@ -1093,7 +1493,7 @@
             reason: reasonCode,
             reasonLabel: reason || "",
             message: bodyMsg,
-            identifier: identifier,
+            identifier: identifier || initialQr || "",
           };
           if (shareContact && trimmedContact) {
             metadata.contact = trimmedContact;
@@ -1101,21 +1501,38 @@
           if (userPlate) {
             metadata.licensePlate = userPlate;
           }
-          const carDetails =
-            (user.carDetails && typeof user.carDetails === "object"
-              ? user.carDetails
-              : {}) || {};
           if (carDetails.carModel) {
             metadata.carModel = carDetails.carModel;
+          } else if (
+            user &&
+            user.carDetails &&
+            typeof user.carDetails.carModel === "string" &&
+            user.carDetails.carModel.trim()
+          ) {
+            metadata.carModel = user.carDetails.carModel.trim();
           }
           if (carDetails.color) {
             metadata.color = carDetails.color;
+          } else if (
+            user &&
+            user.carDetails &&
+            typeof user.carDetails.color === "string" &&
+            user.carDetails.color.trim()
+          ) {
+            metadata.color = user.carDetails.color.trim();
           }
+          const targetUserId =
+            notifyTarget.userId || (user && (user.id || user.userId)) || "";
+          if (targetUserId) {
+            metadata.userId = targetUserId;
+          }
+          const targetQrId =
+            initialQr || (user && (user.qrCodeId || user.qrId)) || identifier;
           try {
             const result = await triggerNotifyFunction({
-              qrId: user.qrCodeId || identifier,
-              userId: user.id || "",
-              fcmToken: user.fcmToken,
+              qrId: targetQrId,
+              userId: targetUserId,
+              fcmToken: targetFcmToken,
               title,
               body: bodyMsg,
               metadata,
@@ -1184,9 +1601,6 @@
             </div>
           );
         }
-        if (!user) {
-          return null;
-        }
         if (sent) {
           return (
             <div className="container py-5 text-center">
@@ -1197,6 +1611,18 @@
             </div>
           );
         }
+        const canRenderForm = user || ownerFromQr || notifyTarget.fcmToken;
+        if (!canRenderForm) {
+          return null;
+        }
+        const displayPlate =
+          carDetails.licensePlate ||
+          (user && (user.licensePlate || user.vehicleNumber)) ||
+          "";
+        const displayIdentifier = identifier || initialQr || "";
+        const canNotify = Boolean(
+          notifyTarget.fcmToken || (user && user.fcmToken)
+        );
         // Reasons with icons for a more engaging UI
         const reasonOptions = [
           { label: "Your vehicle is blocking my way", icon: "bi-exclamation-triangle-fill" },
@@ -1214,10 +1640,10 @@
                 <div className="card-body">
                     <h5 className="card-title mb-3">Sending a note to the owner</h5>
                     <p className="mb-0">
-                      {user && user.licensePlate ? (
-                        <span>Vehicle number: <strong>{user.licensePlate}</strong></span>
+                      {displayPlate ? (
+                        <span>Vehicle number: <strong>{displayPlate}</strong></span>
                       ) : (
-                        <span>Identifier: <strong>{identifier}</strong></span>
+                        <span>Identifier: <strong>{displayIdentifier}</strong></span>
                       )}
                     </p>
                     <p className="text-muted mb-0">
@@ -1307,10 +1733,15 @@
                       <button
                         type="submit"
                         className="btn btn-success w-100 mt-2"
-                        disabled={sending || !reason}
+                        disabled={sending || !reason || !canNotify}
                       >
                         {sending ? "Sending…" : "Notify Owner Now"}
                       </button>
+                      {!canNotify && (
+                        <div className="form-text text-warning mt-2">
+                          Notifications are not available for this vehicle right now.
+                        </div>
+                      )}
                     </form>
                   </div>
                 </div>
