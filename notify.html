@@ -477,8 +477,8 @@
               const userDoc = await db.collection("users").doc(userId).get();
               if (userDoc.exists) {
                 const userData = userDoc.data() || {};
-                if (typeof userData.fcmToken === "string") {
-                  owner.fcmToken = userData.fcmToken;
+                if (typeof userData.fcmToken === "string" && userData.fcmToken.trim()) {
+                  owner.fcmToken = userData.fcmToken.trim();
                 }
                 if (
                   (!owner.carDetails ||

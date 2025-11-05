@@ -227,7 +227,7 @@
         return bytes.slice(0, bytes.length - pad);
       }
 
-      async function decodeQrPayload(payload) {
+      async function decodeQrPayload(payload, versionHint = "") {
         if (!payload) {
           return null;
         }
@@ -265,15 +265,70 @@
         if (!parsed || typeof parsed !== "object") {
           return null;
         }
-        const clean = {};
+        const result = {};
+        const toTrimmedString = (value) => {
+          if (value == null) return "";
+          if (typeof value === "string") return value.trim();
+          if (typeof value === "number" || typeof value === "boolean") {
+            return String(value).trim();
+          }
+          return "";
+        };
+        const resolvedVersion =
+          toTrimmedString(versionHint) ||
+          toTrimmedString(parsed.version) ||
+          toTrimmedString(parsed.payloadVersion);
+        const carDetailSource =
+          parsed.carDetails && typeof parsed.carDetails === "object"
+            ? parsed.carDetails
+            : parsed;
+        const cleanCarDetails = {};
         ["color", "carModel", "licensePlate"].forEach((keyName) => {
-          const value = parsed[keyName];
-          if (typeof value === "string" && value.trim()) {
-            clean[keyName] =
-              keyName === "licensePlate" ? normalisePlate(value) : value.trim();
+          const value = carDetailSource[keyName];
+          const trimmed = toTrimmedString(value);
+          if (trimmed) {
+            cleanCarDetails[keyName] =
+              keyName === "licensePlate" ? normalisePlate(trimmed) : trimmed;
           }
         });
-        return Object.keys(clean).length ? clean : null;
+        if (Object.keys(cleanCarDetails).length) {
+          result.carDetails = cleanCarDetails;
+          Object.assign(result, cleanCarDetails);
+        }
+        const fcmToken = toTrimmedString(parsed.fcmToken);
+        if (fcmToken) {
+          result.fcmToken = fcmToken;
+        }
+        const userId = toTrimmedString(parsed.userId);
+        if (userId) {
+          result.userId = userId;
+        }
+        const qrCodeId = toTrimmedString(parsed.qrCodeId || parsed.qrId);
+        if (qrCodeId) {
+          result.qrCodeId = qrCodeId;
+        }
+        if (parsed.contact && typeof parsed.contact === "object") {
+          const contact = {};
+          const email = toTrimmedString(parsed.contact.email);
+          if (email) {
+            contact.email = email;
+          }
+          const phoneNumber = toTrimmedString(
+            parsed.contact.phoneNumber || parsed.contact.phone
+          );
+          if (phoneNumber) {
+            contact.phoneNumber = phoneNumber;
+          }
+          if (Object.keys(contact).length) {
+            result.contact = contact;
+          }
+        }
+        const versionValue =
+          resolvedVersion || (Object.keys(cleanCarDetails).length ? "1" : "");
+        if (versionValue) {
+          result.version = versionValue;
+        }
+        return Object.keys(result).length ? result : null;
       }
 
       function normalisePlate(value) {
@@ -1216,6 +1271,7 @@
             initialIdentifier: qrParam || idParam || vehicleParam || "",
             initialQr: qrParam || idParam || "",
             initialPayload: payloadParam,
+            payloadVersion: (params.get("v") || "").trim(),
             directDetails: details,
           };
         }, []);
@@ -1237,8 +1293,13 @@
           fcmToken: "",
           userId: "",
         });
+        const [notifyFeedback, setNotifyFeedback] = useState({
+          message: "",
+          variant: "muted",
+        });
         const initialQr = queryDefaults.initialQr;
         const initialPayload = queryDefaults.initialPayload;
+        const initialPayloadVersion = queryDefaults.payloadVersion;
 
         useEffect(() => {
           let cancelled = false;
@@ -1247,7 +1308,10 @@
               return;
             }
             try {
-              const decoded = await decodeQrPayload(initialPayload);
+              const decoded = await decodeQrPayload(
+                initialPayload,
+                initialPayloadVersion
+              );
               if (!decoded || cancelled) {
                 return;
               }
@@ -1264,6 +1328,31 @@
                 });
                 return next;
               });
+              const decodedToken =
+                typeof decoded.fcmToken === "string"
+                  ? decoded.fcmToken.trim()
+                  : "";
+              const decodedUserId =
+                typeof decoded.userId === "string" ? decoded.userId.trim() : "";
+              const decodedQrId =
+                typeof decoded.qrCodeId === "string"
+                  ? decoded.qrCodeId.trim()
+                  : "";
+              if (decodedToken || decodedUserId) {
+                setNotifyTarget((prev) => {
+                  const next = { ...prev };
+                  if (!next.fcmToken && decodedToken) {
+                    next.fcmToken = decodedToken;
+                  }
+                  if (!next.userId && decodedUserId) {
+                    next.userId = decodedUserId;
+                  }
+                  return next;
+                });
+              }
+              if (decodedQrId) {
+                setIdentifier((prev) => prev || decodedQrId);
+              }
             } catch (payloadErr) {
               console.warn("Failed to decode QR payload", payloadErr);
             }
@@ -1272,7 +1361,7 @@
           return () => {
             cancelled = true;
           };
-        }, [initialPayload]);
+        }, [initialPayload, initialPayloadVersion]);
 
         useEffect(() => {
           let cancelled = false;
@@ -1318,6 +1407,8 @@
               } else {
                 setError("");
               }
+              setNotifyTarget({ fcmToken: "", userId: "" });
+              setNotifyFeedback({ message: "", variant: "muted" });
               setUser(null);
               setLoading(false);
               return;
@@ -1356,11 +1447,28 @@
               }
               return next;
             });
-            setNotifyTarget((prev) => ({
-              fcmToken: resolvedUser.fcmToken || prev.fcmToken || "",
-              userId:
-                prev.userId || resolvedUser.id || resolvedUser.userId || "",
-            }));
+            const nextFcmToken =
+              typeof resolvedUser.fcmToken === "string"
+                ? resolvedUser.fcmToken.trim()
+                : "";
+            const nextUserId =
+              resolvedUser.id || resolvedUser.userId || "";
+            setNotifyTarget({
+              fcmToken: nextFcmToken,
+              userId: nextUserId,
+            });
+            if (nextFcmToken) {
+              setNotifyFeedback({
+                message: "Ready to alert the owner instantly.",
+                variant: "muted",
+              });
+            } else {
+              setNotifyFeedback({
+                message:
+                  "The owner has not enabled push notifications yet. Try contacting them using the details on the QR card.",
+                variant: "warning",
+              });
+            }
           }
           resolveId();
           return () => {
@@ -1372,10 +1480,55 @@
           let cancelled = false;
           if (!initialQr) {
             setOwnerFromQr(null);
+            if (!identifier) {
+              setNotifyFeedback({
+                message:
+                  "Notifications are available only when you scan a registered Avahanaa QR code.",
+                variant: "muted",
+              });
+              setNotifyTarget({
+                fcmToken: "",
+                userId: "",
+              });
+            }
             return () => {
               cancelled = true;
             };
           }
+          if (!functionsClient) {
+            setOwnerFromQr(null);
+            setNotifyTarget({
+              fcmToken: "",
+              userId: "",
+            });
+            setNotifyFeedback({
+              message:
+                "Notifications service is unavailable right now. Please try again later.",
+              variant: "danger",
+            });
+            return () => {
+              cancelled = true;
+            };
+          }
+          if (!db) {
+            setOwnerFromQr(null);
+            setNotifyTarget({
+              fcmToken: "",
+              userId: "",
+            });
+            setNotifyFeedback({
+              message:
+                "We could not connect to the owner directory right now. Please try again shortly.",
+              variant: "danger",
+            });
+            return () => {
+              cancelled = true;
+            };
+          }
+          setNotifyFeedback({
+            message: "Fetching owner profile...",
+            variant: "info",
+          });
           async function hydrateFromQr() {
             try {
               const owner = await fetchOwnerByQr(initialQr);
@@ -1391,6 +1544,15 @@
                 } else {
                   setError("");
                 }
+                setNotifyTarget({
+                  fcmToken: "",
+                  userId: "",
+                });
+                setNotifyFeedback({
+                  message:
+                    "This QR code is not yet linked to an owner profile. Ask them to open the Avahanaa app.",
+                  variant: "warning",
+                });
                 return;
               }
               setOwnerFromQr(owner);
@@ -1410,10 +1572,26 @@
                   return next;
                 });
               }
-              setNotifyTarget((prev) => ({
-                fcmToken: owner.fcmToken || prev.fcmToken || "",
-                userId: owner.userId || prev.userId || "",
-              }));
+              if (!owner.fcmToken) {
+                setNotifyTarget({
+                  fcmToken: "",
+                  userId: owner.userId || "",
+                });
+                setNotifyFeedback({
+                  message:
+                    "The owner has not enabled push notifications yet. Try contacting them using the details on the QR card.",
+                  variant: "warning",
+                });
+                return;
+              }
+              setNotifyTarget({
+                fcmToken: owner.fcmToken,
+                userId: owner.userId || "",
+              });
+              setNotifyFeedback({
+                message: "Ready to alert the owner instantly.",
+                variant: "muted",
+              });
             } catch (qrErr) {
               if (!cancelled) {
                 console.error(
@@ -1421,6 +1599,11 @@
                   initialQr,
                   qrErr
                 );
+                setNotifyFeedback({
+                  message:
+                    "Notifications service is unavailable right now. Please try again later.",
+                  variant: "danger",
+                });
               }
             }
           }
@@ -1428,7 +1611,7 @@
           return () => {
             cancelled = true;
           };
-        }, [initialQr, user]);
+        }, [initialQr, user, identifier]);
 
         useEffect(() => {
           if (user || !ownerFromQr) {
@@ -1463,10 +1646,32 @@
           if (sending) return;
           const targetFcmToken =
             notifyTarget.fcmToken || (user && user.fcmToken) || "";
+          const targetUserId =
+            notifyTarget.userId || (user && (user.id || user.userId)) || "";
+          const targetQrId =
+            initialQr || (user && (user.qrCodeId || user.qrId)) || identifier;
+          if (!targetQrId) {
+            setNotifyFeedback({
+              message:
+                "We could not confirm the QR reference for this vehicle. Please refresh the page or rescan the Avahanaa QR code.",
+              variant: "warning",
+            });
+            return;
+          }
+          if (!targetUserId) {
+            setNotifyFeedback({
+              message:
+                "We could not verify the owner's Avahanaa account. Ask them to refresh their QR from the app.",
+              variant: "warning",
+            });
+            return;
+          }
           if (!targetFcmToken) {
-            setError(
-              "The owner has not enabled push notifications yet. Please try another contact method."
-            );
+            setNotifyFeedback({
+              message:
+                "The owner has not enabled push notifications yet. Try contacting them using the details on the QR card.",
+              variant: "warning",
+            });
             return;
           }
           const reasonCode = reasonCodeMap[reason] || "other";
@@ -1489,6 +1694,10 @@
               : baseMessage;
           setSending(true);
           setError("");
+          setNotifyFeedback({
+            message: "Sending notification...",
+            variant: "info",
+          });
           const metadata = {
             reason: reasonCode,
             reasonLabel: reason || "",
@@ -1521,13 +1730,7 @@
           ) {
             metadata.color = user.carDetails.color.trim();
           }
-          const targetUserId =
-            notifyTarget.userId || (user && (user.id || user.userId)) || "";
-          if (targetUserId) {
-            metadata.userId = targetUserId;
-          }
-          const targetQrId =
-            initialQr || (user && (user.qrCodeId || user.qrId)) || identifier;
+          metadata.userId = targetUserId;
           try {
             const result = await triggerNotifyFunction({
               qrId: targetQrId,
@@ -1538,13 +1741,26 @@
               metadata,
             });
             if (result.ok) {
+              setNotifyFeedback({
+                message:
+                  "Notification sent successfully to the owner's device.",
+                variant: "success",
+              });
               setSent(true);
             } else {
-              setError(result.message || "Failed to send notification.");
+              const failureMessage =
+                result.message || "Failed to send notification.";
+              setNotifyFeedback({
+                message: failureMessage,
+                variant: "danger",
+              });
             }
           } catch (err) {
             console.error("Failed to send notification", err);
-            setError(err?.message || "Failed to send notification.");
+            setNotifyFeedback({
+              message: err?.message || "Failed to send notification.",
+              variant: "danger",
+            });
           } finally {
             setSending(false);
           }
@@ -1623,6 +1839,15 @@
         const canNotify = Boolean(
           notifyTarget.fcmToken || (user && user.fcmToken)
         );
+        const feedbackVariantClass = {
+          success: "text-success",
+          danger: "text-danger",
+          warning: "text-warning",
+          info: "text-info",
+          muted: "text-muted",
+        };
+        const feedbackClass =
+          feedbackVariantClass[notifyFeedback.variant] || "text-muted";
         // Reasons with icons for a more engaging UI
         const reasonOptions = [
           { label: "Your vehicle is blocking my way", icon: "bi-exclamation-triangle-fill" },
@@ -1731,16 +1956,20 @@
                         </div>
                       )}
                       <button
+                        id="notifyOwnerBtn"
                         type="submit"
                         className="btn btn-success w-100 mt-2"
                         disabled={sending || !reason || !canNotify}
                       >
                         {sending ? "Sending…" : "Notify Owner Now"}
                       </button>
-                      {!canNotify && (
-                        <div className="form-text text-warning mt-2">
-                          Notifications are not available for this vehicle right now.
-                        </div>
+                      {notifyFeedback.message && (
+                        <p
+                          id="notifyOwnerFeedback"
+                          className={`small mt-2 ${feedbackClass}`}
+                        >
+                          {notifyFeedback.message}
+                        </p>
                       )}
                     </form>
                   </div>
