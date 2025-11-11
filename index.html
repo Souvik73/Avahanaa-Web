@@ -336,6 +336,11 @@
         return value.trim().toUpperCase();
       }
 
+      function canonicalisePlate(value) {
+        if (!value) return "";
+        return normalisePlate(value).replace(/[^A-Z0-9]/g, "");
+      }
+
       async function encryptQrPayload(details) {
         if (!qrSubtleCrypto) {
           throw new Error("Web Crypto API is unavailable in this browser.");
@@ -370,7 +375,7 @@
       // Firebase configuration (replace with your own values)
       const firebaseConfig = {
         apiKey: "AIzaSyDVB09QVh9YizQ7p1YXGcQWQ_43NV6f0SE",
-        authDomain: "congestion-free.firebaseapp.com",
+        authDomain: "congestion-free.web.app",
         projectId: "congestion-free",
         storageBucket: "congestion-free.firebasestorage.app",
         messagingSenderId: "76007537447",
@@ -448,9 +453,11 @@
        * the "users" collection for a matching `qrCodeId`. If no result is found
        * it then tries to match a `licensePlate` or `vehicleNumber` field. You
        * should ensure that license plates in Firestore are stored in a
-       * normalised format (e.g. uppercase without spaces) to allow direct
+       * normalised format (e.g. uppercase without separators) to allow direct
        * equality matching since Firestore does not support case‑insensitive
-       * queries. When multiple matches are found, the first record is used.
+       * queries. The lookup tries both the uppercased value and a canonical
+       * variant with non‑alphanumeric characters removed. When multiple matches
+       * are found, the first record is used.
        *
        * @param {string} identifier QR code ID or vehicle number
        * @returns {Promise<Object|null>} user document or null if not found
@@ -459,11 +466,18 @@
         if (!identifier) return null;
         // Normalise identifier for licence plate matching
         const normId = identifier.trim().toUpperCase();
+        const canonicalId = canonicalisePlate(identifier);
+        const lookupCandidates = Array.from(
+          new Set([normId, canonicalId].filter(Boolean))
+        );
         // Demo fallback when Firestore is not set up
         if (!db) {
           // In demo mode we map id "1" or license "KA 01 ** 1234" to a test user
           const demoPlates = ["1", "KA 01 ** 1234", "KA01**1234", "KA01** 1234"];
-          if (demoPlates.includes(normId)) {
+          const matchesDemo = lookupCandidates.some((candidate) =>
+            demoPlates.includes(candidate)
+          );
+          if (matchesDemo) {
             return {
               id: "demoUser",
               name: "Demo User",
@@ -487,16 +501,25 @@
             return { id: doc.id, ...doc.data() };
           }
           // Next try by license plate (normalised). Fields may be named differently; try common names
-          const plateFields = ["licensePlate", "vehicleNumber", "plateNumber", "carNumber"];
+          const plateFields = [
+            "licensePlate",
+            "vehicleNumber",
+            "plateNumber",
+            "carNumber",
+            "carDetails.licensePlate",
+            "carDetails.vehicleNumber",
+          ];
           for (const field of plateFields) {
-            snapshot = await db
-              .collection("users")
-              .where(field, "==", normId)
-              .limit(1)
-              .get();
-            if (!snapshot.empty) {
-              const doc = snapshot.docs[0];
-              return { id: doc.id, ...doc.data() };
+            for (const candidate of lookupCandidates) {
+              snapshot = await db
+                .collection("users")
+                .where(field, "==", candidate)
+                .limit(1)
+                .get();
+              if (!snapshot.empty) {
+                const doc = snapshot.docs[0];
+                return { id: doc.id, ...doc.data() };
+              }
             }
           }
           // If no match, return null
@@ -1276,6 +1299,9 @@
           };
         }, []);
         const [identifier, setIdentifier] = useState(queryDefaults.initialIdentifier);
+        const [identifierInput, setIdentifierInput] = useState(
+          queryDefaults.initialIdentifier
+        );
         const [user, setUser] = useState(null);
         const [ownerFromQr, setOwnerFromQr] = useState(null);
         const [loading, setLoading] = useState(false);
@@ -1300,6 +1326,39 @@
         const initialQr = queryDefaults.initialQr;
         const initialPayload = queryDefaults.initialPayload;
         const initialPayloadVersion = queryDefaults.payloadVersion;
+        const displayPlate = useMemo(() => {
+          const plateValue =
+            carDetails.licensePlate ||
+            (user && (user.licensePlate || user.vehicleNumber)) ||
+            "";
+          return plateValue.trim();
+        }, [carDetails.licensePlate, user]);
+        const displayIdentifier = useMemo(
+          () => identifier || initialQr || "",
+          [identifier, initialQr]
+        );
+        const handleIdentifierResolve = useCallback(() => {
+          const trimmed = identifierInput.trim();
+          if (!trimmed) {
+            return;
+          }
+          const normalisedEntry = normalisePlate(trimmed);
+          setIdentifierInput(trimmed);
+          setIdentifier(normalisedEntry);
+          setCarDetails((prev) => ({
+            ...prev,
+            licensePlate: normalisedEntry,
+          }));
+          const params = new URLSearchParams(window.location.search);
+          params.set("vehicle", normalisedEntry);
+          params.delete("qr");
+          params.delete("id");
+          const nextQuery = params.toString();
+          const nextUrl = nextQuery
+            ? `${window.location.pathname}?${nextQuery}`
+            : window.location.pathname;
+          window.history.replaceState({}, "", nextUrl);
+        }, [identifierInput]);
 
         useEffect(() => {
           let cancelled = false;
@@ -1365,10 +1424,11 @@
 
         useEffect(() => {
           let cancelled = false;
-          if (!identifier && !initialQr) {
+          const hasLookupValue = Boolean(displayPlate || identifier);
+          if (!hasLookupValue && !initialQr) {
             setUser(null);
             setLoading(false);
-            if (!identifier) {
+            if (!hasLookupValue) {
               setError("");
             }
             return () => {
@@ -1379,10 +1439,17 @@
             setLoading(true);
             setError("");
             const searchOrder = [];
-            if (identifier) {
+            if (displayPlate) {
+              searchOrder.push(displayPlate);
+            }
+            if (identifier && identifier !== displayPlate) {
               searchOrder.push(identifier);
             }
-            if (initialQr && initialQr !== identifier) {
+            if (
+              initialQr &&
+              initialQr !== identifier &&
+              initialQr !== displayPlate
+            ) {
               searchOrder.push(initialQr);
             }
             let resolvedUser = null;
@@ -1414,6 +1481,18 @@
               return;
             }
             setUser(resolvedUser);
+            setIdentifier((prev) => {
+              const nextIdentifier =
+                resolvedUser.qrCodeId ||
+                resolvedUser.qrId ||
+                resolvedUser.id ||
+                resolvedUser.userId ||
+                "";
+              if (!nextIdentifier || nextIdentifier === prev) {
+                return prev;
+              }
+              return nextIdentifier;
+            });
             setError("");
             setLoading(false);
             setCarDetails((prev) => {
@@ -1474,7 +1553,7 @@
           return () => {
             cancelled = true;
           };
-        }, [identifier, initialQr]);
+        }, [displayPlate, identifier, initialQr]);
 
         useEffect(() => {
           let cancelled = false;
@@ -1776,21 +1855,22 @@
                     type="text"
                     className="form-control"
                     placeholder="Vehicle number or QR ID"
-                    value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value.trim())}
+                    value={identifierInput}
+                    onChange={(e) => setIdentifierInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleIdentifierResolve();
+                      }
+                    }}
                   />
                 </div>
                 <div className="col-auto">
                   <button
+                    type="button"
                     className="btn btn-primary"
-                    onClick={() => {
-                      const params = new URLSearchParams(window.location.search);
-                      params.set("id", identifier);
-                      // remove other params to avoid conflicts
-                      params.delete("qr");
-                      params.delete("vehicle");
-                      window.location.search = params.toString();
-                    }}
+                    onClick={handleIdentifierResolve}
+                    disabled={!identifierInput.trim()}
                   >
                     Resolve
                   </button>
@@ -1831,11 +1911,6 @@
         if (!canRenderForm) {
           return null;
         }
-        const displayPlate =
-          carDetails.licensePlate ||
-          (user && (user.licensePlate || user.vehicleNumber)) ||
-          "";
-        const displayIdentifier = identifier || initialQr || "";
         const canNotify = Boolean(
           notifyTarget.fcmToken || (user && user.fcmToken)
         );
