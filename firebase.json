@@ -11,6 +11,10 @@
     ],
     "rewrites": [
       {
+        "source": "/api/firebase-config",
+        "function": "getFirebaseClientConfig"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

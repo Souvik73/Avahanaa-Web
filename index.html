@@ -372,36 +372,68 @@
         return bytesToBase64(new Uint8Array(encryptedBuffer));
       }
 
-      // Firebase configuration (replace with your own values)
-      const firebaseConfig = {
-        apiKey: "AIzaSyDVB09QVh9YizQ7p1YXGcQWQ_43NV6f0SE",
-        authDomain: "congestion-free.web.app",
-        projectId: "congestion-free",
-        storageBucket: "congestion-free.firebasestorage.app",
-        messagingSenderId: "76007537447",
-        appId: "1:76007537447:web:57a848570f39091b5a4702",
-        measurementId: "G-5PNGPJZL6D",
-      };
-
-      // Initialize Firebase using the compat SDK
+      // Firebase configuration is fetched at runtime so keys are not embedded in the HTML.
       let db = null;
       let functionsClient = null;
-      try {
-        if (firebase.apps.length === 0) {
-          firebase.initializeApp(firebaseConfig);
-        }
-        db = firebase.firestore();
-        functionsClient = firebase.functions();
-        if (typeof firebase.analytics === "function") {
-          try {
-            firebase.analytics();
-          } catch (analyticsErr) {
-            console.warn("Firebase analytics initialisation failed:", analyticsErr);
+      let firebaseInitPromise = null;
+
+      async function fetchFirebaseConfig() {
+        try {
+          const response = await fetch("/api/firebase-config", {
+            method: "GET",
+            credentials: "same-origin",
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to load Firebase config (status ${response.status})`);
           }
+          const config = await response.json();
+          if (
+            !config ||
+            typeof config.apiKey !== "string" ||
+            !config.apiKey.trim()
+          ) {
+            throw new Error("Invalid Firebase config response.");
+          }
+          return config;
+        } catch (error) {
+          console.error("Firebase config fetch failed:", error);
+          return null;
         }
-      } catch (initErr) {
-        console.error("Firebase initialization failed:", initErr);
       }
+
+      async function ensureFirebaseInitialised() {
+        if (firebaseInitPromise) {
+          return firebaseInitPromise;
+        }
+        firebaseInitPromise = (async () => {
+          const firebaseConfig = await fetchFirebaseConfig();
+          if (!firebaseConfig) {
+            return false;
+          }
+          try {
+            if (firebase.apps.length === 0) {
+              firebase.initializeApp(firebaseConfig);
+            }
+            db = firebase.firestore();
+            functionsClient = firebase.functions();
+            if (typeof firebase.analytics === "function") {
+              try {
+                firebase.analytics();
+              } catch (analyticsErr) {
+                console.warn("Firebase analytics initialisation failed:", analyticsErr);
+              }
+            }
+            return true;
+          } catch (initErr) {
+            console.error("Firebase initialization failed:", initErr);
+            return false;
+          }
+        })();
+        return firebaseInitPromise;
+      }
+
+      // Kick off Firebase initialisation eagerly; downstream calls also await this.
+      ensureFirebaseInitialised().catch(() => {});
 
       /**
        * Utility to parse query parameters
@@ -418,6 +450,7 @@
        */
       async function fetchUserByQrId(qrId) {
         if (!qrId) return null;
+        await ensureFirebaseInitialised();
         // If Firestore isn't configured, return a test user for demonstration when qrId is "1".
         if (!db) {
           if (qrId === "1") {
@@ -464,6 +497,7 @@
        */
       async function fetchUserByIdOrPlate(identifier) {
         if (!identifier) return null;
+        await ensureFirebaseInitialised();
         // Normalise identifier for licence plate matching
         const normId = identifier.trim().toUpperCase();
         const canonicalId = canonicalisePlate(identifier);
@@ -532,6 +566,7 @@
 
       async function fetchOwnerByQr(qrCodeId) {
         if (!qrCodeId) return null;
+        await ensureFirebaseInitialised();
         if (!db) {
           if (qrCodeId === "1") {
             return {
@@ -617,6 +652,7 @@
        * Invokes the notifyOwner Cloud Function to deliver push notifications.
        */
       async function triggerNotifyFunction(payload) {
+        await ensureFirebaseInitialised();
         if (!functionsClient) {
           return {
             ok: false,
@@ -1122,7 +1158,8 @@
         async function handleSubmit(e) {
           e.preventDefault();
           setError("");
-          if (!db) {
+          const ready = await ensureFirebaseInitialised();
+          if (!ready || !db) {
             setError(
               "Contact form is unavailable because Firebase is not configured."
             );
@@ -1574,41 +1611,28 @@
               cancelled = true;
             };
           }
-          if (!functionsClient) {
-            setOwnerFromQr(null);
-            setNotifyTarget({
-              fcmToken: "",
-              userId: "",
-            });
-            setNotifyFeedback({
-              message:
-                "Notifications service is unavailable right now. Please try again later.",
-              variant: "danger",
-            });
-            return () => {
-              cancelled = true;
-            };
-          }
-          if (!db) {
-            setOwnerFromQr(null);
-            setNotifyTarget({
-              fcmToken: "",
-              userId: "",
-            });
-            setNotifyFeedback({
-              message:
-                "We could not connect to the owner directory right now. Please try again shortly.",
-              variant: "danger",
-            });
-            return () => {
-              cancelled = true;
-            };
-          }
-          setNotifyFeedback({
-            message: "Fetching owner profile...",
-            variant: "info",
-          });
           async function hydrateFromQr() {
+            const ready = await ensureFirebaseInitialised();
+            if (cancelled) {
+              return;
+            }
+            if (!ready || !functionsClient || !db) {
+              setOwnerFromQr(null);
+              setNotifyTarget({
+                fcmToken: "",
+                userId: "",
+              });
+              setNotifyFeedback({
+                message:
+                  "Notifications service is unavailable right now. Please try again later.",
+                variant: "danger",
+              });
+              return;
+            }
+            setNotifyFeedback({
+              message: "Fetching owner profile...",
+              variant: "info",
+            });
             try {
               const owner = await fetchOwnerByQr(initialQr);
               if (cancelled) {
