@@ -46,7 +46,7 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
     ? request.auth || null
     : legacyContext?.auth || null;
 
-  const {
+const {
     qrId = "",
     userId = "",
     fcmToken = "",
@@ -70,46 +70,65 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
     });
     throw new functions.https.HttpsError(
       "invalid-argument",
-      `Missing required fields ${safeStringify(data, { pretty: true })}: ${missingFields.join(", ")}`
+      `Missing required fields: ${missingFields.join(", ")}`
     );
   }
 
   const cleanedMetadata = {};
   if (metadata && typeof metadata === "object") {
     Object.entries(metadata).forEach(([key, value]) => {
-      if (typeof value === "string" && value.trim().length) {
-        cleanedMetadata[key] = value.trim();
+      if (value === undefined || value === null) return;
+      const strValue = String(value).trim();
+      if (strValue.length) {
+        cleanedMetadata[key] = strValue;
       }
     });
   }
 
   try {
-    await messaging.send({
+    const dataPayload = {
+      qrId,
+      userId,
+      source: "avahanaa-web",
+      ...Object.entries(cleanedMetadata).reduce((acc, [key, value]) => {
+        acc[key] = value;
+        return acc;
+      }, {}),
+    };
+
+    const message = {
       token: fcmToken,
       notification: {
         title,
         body,
       },
-      data: {
-        qrId,
-        userId,
-        source: "avahanaa-web",
-        ...Object.entries(cleanedMetadata).reduce((acc, [key, value]) => {
-          acc[key] = value;
-          return acc;
-        }, {}),
-      },
+      data: dataPayload,
       android: {
         priority: "high",
+        notification: {
+          channelId: "congestion_free_channel",
+          clickAction: "FLUTTER_NOTIFICATION_CLICK",
+          sound: "default",
+        },
       },
       apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-push-type": "alert",
+        },
         payload: {
           aps: {
+            alert: {
+              title,
+              body,
+            },
             sound: "default",
           },
         },
       },
-    });
+    };
+
+    await messaging.send(message);
 
     await firestore.collection("notifications").add({
       qrCodeId: qrId,
