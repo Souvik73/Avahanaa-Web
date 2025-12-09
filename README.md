@@ -76,7 +76,7 @@ Ensure your `firebase.json` hosting section points to this directory (e.g. `"pub
 
 ## Notification Flow
 
-1. QR sticker encodes a URL such as `https://congestion-free.firebaseapp.com/notify.html?qr=<ID>`.
+1. QR sticker encodes a URL such as `https://avahanaa.com/notify.html?qr=<ID>`.
 2. The landing page (or the Notify view inside `index.html`) loads the vehicle metadata directly from the query parameters first, then resolves missing details through Firestore (`qrCodes` → `users`).
 3. When the visitor taps **Notify this owner**, the page calls the callable Cloud Function:
 
