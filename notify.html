@@ -199,39 +199,20 @@
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
 
-        let firebaseConfig = null;
+        const firebaseConfig = {
+          apiKey: "AIzaSyDVB09QVh9YizQ7p1YXGcQWQ_43NV6f0SE",
+          authDomain: "congestion-free.firebaseapp.com",
+          projectId: "congestion-free",
+          storageBucket: "congestion-free.firebasestorage.app",
+          messagingSenderId: "76007537447",
+          appId: "1:76007537447:web:57a848570f39091b5a4702",
+          measurementId: "G-5PNGPJZL6D",
+        };
+
         let firestoreInstance = null;
         let functionsInstance = null;
         let analyticsInitialised = false;
         let statusPreset = null;
-
-        try {
-          const configResponse = await fetch("/api/firebase-config", {
-            method: "GET",
-            credentials: "same-origin",
-          });
-          if (!configResponse.ok) {
-            throw new Error(
-              `Config request failed (${configResponse.status || "unknown status"})`
-            );
-          }
-          const parsedConfig = await configResponse.json();
-          if (!parsedConfig || !parsedConfig.apiKey) {
-            throw new Error("Invalid Firebase config response");
-          }
-          firebaseConfig = parsedConfig;
-        } catch (error) {
-          console.error("Failed to load Firebase config", error);
-          setStatus(
-            "We could not load the notification service configuration. Please try again later.",
-            "danger"
-          );
-          if (elements.notifyButton) {
-            elements.notifyButton.disabled = true;
-            elements.notifyButton.classList.add("disabled");
-          }
-          return;
-        }
 
         const notificationState = {
           qrId: params.get("qr")?.trim() || "",
@@ -391,9 +372,6 @@
         }
 
         function ensureFirebaseApp() {
-          if (!firebaseConfig) {
-            return null;
-          }
           if (!window.firebase || !window.firebase.apps) {
             console.warn("Firebase SDK is not available on this page.");
             return null;
