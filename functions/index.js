@@ -166,18 +166,17 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
 
   const {
     qrId = "",
-    userId = "",
-    fcmToken = "",
+    userId: payloadUserId = "",
+    fcmToken: payloadFcmToken = "",
+    vehicleId: payloadVehicleId = "",
     title = "",
     body = "",
     metadata = {},
   } = (payload && typeof payload === "object" ? payload : {}) || {};
 
-  if (!qrId || !userId || !fcmToken || !title || !body) {
+  if (!qrId || !title || !body) {
     const missingFields = [
       !qrId && "qrId",
-      !userId && "userId",
-      !fcmToken && "fcmToken",
       !title && "title",
       !body && "body",
     ].filter(Boolean);
@@ -203,10 +202,123 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
     });
   }
 
+  let resolvedUserId = "";
+  let resolvedVehicleId = "";
+  let resolvedFcmToken = "";
+
   try {
+    const qrDoc = await firestore.collection("qrCodes").doc(qrId).get();
+    if (!qrDoc.exists) {
+      throw new functions.https.HttpsError(
+        "not-found",
+        "This QR code is not linked to any owner profile yet."
+      );
+    }
+
+    const qrData = qrDoc.data() || {};
+    const qrMetadata =
+      qrData.metadata && typeof qrData.metadata === "object"
+        ? qrData.metadata
+        : {};
+
+    if (qrData.isActive === false) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "This QR code is currently inactive."
+      );
+    }
+
+    resolvedUserId = String(
+      qrData.userId ||
+      qrMetadata.userId ||
+      cleanedMetadata.userId ||
+      payloadUserId
+    ).trim();
+    resolvedVehicleId = String(
+      qrData.vehicleId ||
+      qrMetadata.vehicleId ||
+      cleanedMetadata.vehicleId ||
+      payloadVehicleId
+    ).trim();
+
+    if (!resolvedUserId) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Could not resolve owner account for this QR code."
+      );
+    }
+
+    const userDoc = await firestore.collection("users").doc(resolvedUserId).get();
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError(
+        "not-found",
+        "Owner profile for this QR code was not found."
+      );
+    }
+
+    const userData = userDoc.data() || {};
+    if (userData.notificationsEnabled === false) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "The owner has disabled notifications."
+      );
+    }
+
+    if (resolvedVehicleId) {
+      try {
+        const vehicleDoc = await firestore
+          .collection("users")
+          .doc(resolvedUserId)
+          .collection("vehicles")
+          .doc(resolvedVehicleId)
+          .get();
+        if (vehicleDoc.exists) {
+          const vehicleData = vehicleDoc.data() || {};
+          if (
+            vehicleData.isActive === false ||
+            vehicleData.notificationsEnabled === false
+          ) {
+            throw new functions.https.HttpsError(
+              "failed-precondition",
+              "Notifications for this vehicle are currently disabled."
+            );
+          }
+        }
+      } catch (vehicleError) {
+        if (vehicleError instanceof functions.https.HttpsError) {
+          throw vehicleError;
+        }
+        functions.logger.warn("Vehicle validation skipped due to lookup error", {
+          qrId,
+          resolvedUserId,
+          resolvedVehicleId,
+          error: vehicleError?.message,
+        });
+      }
+    }
+
+    resolvedFcmToken = String(
+      userData.fcmToken ||
+      qrData.fcmToken ||
+      payloadFcmToken
+    ).trim();
+
+    if (!resolvedFcmToken) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "The owner has not enabled push notifications yet."
+      );
+    }
+
+    cleanedMetadata.userId = resolvedUserId;
+    if (resolvedVehicleId) {
+      cleanedMetadata.vehicleId = resolvedVehicleId;
+    }
+
     const dataPayload = {
       qrId,
-      userId,
+      userId: resolvedUserId,
+      ...(resolvedVehicleId ? { vehicleId: resolvedVehicleId } : {}),
       source: "avahanaa-web",
       ...Object.entries(cleanedMetadata).reduce((acc, [key, value]) => {
         acc[key] = value;
@@ -217,7 +329,7 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
     await enforceRateLimits({ qrId, requesterFingerprint });
 
     const message = {
-      token: fcmToken,
+      token: resolvedFcmToken,
       notification: {
         title,
         body,
@@ -252,7 +364,8 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
 
     await firestore.collection("notifications").add({
       qrCodeId: qrId,
-      userId,
+      userId: resolvedUserId,
+      vehicleId: resolvedVehicleId,
       reason: cleanedMetadata.reason || "other",
       message: cleanedMetadata.message || body,
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -261,7 +374,11 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
       readAt: null,
     });
 
-    return { ok: true };
+    return {
+      ok: true,
+      userId: resolvedUserId,
+      vehicleId: resolvedVehicleId,
+    };
   } catch (error) {
     const isInvalidToken =
       error?.code === "messaging/registration-token-not-registered" ||
@@ -269,14 +386,14 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
 
     if (isInvalidToken) {
       functions.logger.warn("Invalid FCM token, deleting from user profile", {
-        userId,
+        userId: resolvedUserId,
         qrId,
-        fcmToken,
+        fcmToken: resolvedFcmToken,
         error: error?.message,
       });
-      if (userId) {
+      if (resolvedUserId) {
         try {
-          await firestore.collection("users").doc(userId).set(
+          await firestore.collection("users").doc(resolvedUserId).set(
             {
               fcmToken: admin.firestore.FieldValue.delete(),
               fcmTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -285,7 +402,7 @@ exports.notifyOwner = functions.https.onCall(async (request, legacyContext) => {
           );
         } catch (tokenErr) {
           functions.logger.warn("Failed clearing invalid token", {
-            userId,
+            userId: resolvedUserId,
             tokenErr: tokenErr?.message,
           });
         }

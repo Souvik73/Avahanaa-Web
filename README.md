@@ -52,8 +52,6 @@ npm install
 cd ..
 ```
 
-The callable function only needs `firebase-admin` and `firebase-functions`; no secrets or server keys are required because Cloud Functions runs with your project’s service account.
-
 ### 4. Emulate Locally (optional but recommended)
 
 If you want to test the notify flow without deploying:
