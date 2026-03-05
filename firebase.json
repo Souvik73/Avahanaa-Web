@@ -6,6 +6,11 @@
     "public": ".",
     "ignore": [
       "firebase.json",
+      ".firebaserc",
+      "README.md",
+      ".git/**",
+      ".firebase/**",
+      "functions/**",
       "**/.*",
       "**/node_modules/**"
     ],
